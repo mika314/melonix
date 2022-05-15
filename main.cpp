@@ -3,20 +3,15 @@
 // If you are new to Dear ImGui, read documentation from the docs/ folder + read the top of imgui.cpp.
 // Read online: https://github.com/ocornut/imgui/tree/master/docs
 
+#include "app.hpp"
+#include "file_open.hpp"
 #include "imgui_impl_opengl3.h"
 #include "imgui_impl_sdl.h"
 #include <SDL.h>
-#include <imgui/imgui.h>
-#include <stdio.h>
-#if defined(IMGUI_IMPL_OPENGL_ES2)
-#include <SDL_opengles2.h>
-#else
-#include <SDL_opengl.h>
-#endif
-#include "app.hpp"
-#include "file_open.hpp"
 #include <functional>
+#include <imgui/imgui.h>
 #include <log/log.hpp>
+#include <stdio.h>
 
 // Main code
 int main(int, char **)
@@ -110,9 +105,6 @@ int main(int, char **)
   // ImFont* font = io.Fonts->AddFontFromFileTTF("c:\\Windows\\Fonts\\ArialUni.ttf", 18.0f, NULL, io.Fonts->GetGlyphRangesJapanese());
   // IM_ASSERT(font != NULL);
 
-  // Our state
-  ImVec4 clear_color = ImVec4(0.45f, 0.0f, 0.30f, 1.00f);
-
   // Main loop
   bool done = false;
   App app;
@@ -131,6 +123,24 @@ int main(int, char **)
         done = true;
       if (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_CLOSE && event.window.windowID == SDL_GetWindowID(window))
         done = true;
+
+      // Redirect mouse motions to the app
+      if (io.WantCaptureMouse)
+        continue;
+      switch (event.type)
+      {
+      case SDL_MOUSEMOTION:
+        app.mouseMotion(
+          // x, y
+          event.motion.x,
+          event.motion.y,
+          // dx, dy
+          event.motion.xrel,
+          event.motion.yrel,
+          // buttons
+          event.motion.state);
+        break;
+      }
     }
 
     // Start the Dear ImGui frame
@@ -143,18 +153,8 @@ int main(int, char **)
     // Rendering
     ImGui::Render();
 
-    glViewport(0, 0, (int)io.DisplaySize.x, (int)io.DisplaySize.y - 20);
-    glMatrixMode(GL_PROJECTION);
-    glLoadIdentity();
-    glOrtho(0, 1920, 0x8000, -0x8000, -1, 1);
-    glClearColor(clear_color.x * clear_color.w, clear_color.y * clear_color.w, clear_color.z * clear_color.w, clear_color.w);
-    glClear(GL_COLOR_BUFFER_BIT);
-    glColor3f(1.0f, 1.0f, 1.0f);
-    glBegin(GL_TRIANGLES);
-    glVertex2f(1920 / 2, -0x8000);
-    glVertex2f(0.f, 0x8000);
-    glVertex2f(1920.f, 0x8000);
-    glEnd();
+    app.glDraw();
+
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
     // Update and Render additional Platform Windows
