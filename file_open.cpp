@@ -39,7 +39,9 @@ auto FileOpen::draw() -> bool
       if (isHidden)
         continue;
       const auto isDirectory = std::filesystem::is_directory(file);
-      if (ImGui::Selectable(file.filename().string().c_str(), selectedFile == file, ImGuiSelectableFlags_AllowDoubleClick))
+
+      if (ImGui::Selectable(
+            ((isDirectory ? "> " : "  ") + file.filename().string()).c_str(), selectedFile == file, ImGuiSelectableFlags_AllowDoubleClick))
       {
         if (ImGui::IsMouseDoubleClicked(0))
         {
@@ -72,19 +74,18 @@ auto FileOpen::draw() -> bool
 
   // Show the selected file
   if (!selectedFile.empty())
-    ImGui::Text("Selected file: %s", selectedFile.filename().c_str());
+    ImGui::Text("%s", selectedFile.filename().c_str());
   else
     ImGui::Text("No file selected");
 
-
-
+  ImGui::SameLine(700 - 2 * 120 - 10);
   if (ImGui::Button("OK", ImVec2(120, 0)))
   {
     ImGui::CloseCurrentPopup();
     ret = true;
   }
   ImGui::SetItemDefaultFocus();
-  ImGui::SameLine();
+  ImGui::SameLine(700 - 120);
   if (ImGui::Button("Cancel", ImVec2(120, 0)))
     ImGui::CloseCurrentPopup();
   ImGui::EndPopup();
