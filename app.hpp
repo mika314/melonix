@@ -1,5 +1,15 @@
 #pragma once
 #include "file_open.hpp"
+#include "range.hpp"
+#include "spec.hpp"
+#include <list>
+#include <unordered_map>
+
+#if defined(IMGUI_IMPL_OPENGL_ES2)
+#include <SDL_opengles2.h>
+#else
+#include <SDL_opengl.h>
+#endif
 
 class App
 {
@@ -17,8 +27,23 @@ private:
   double startTime = 0.;
   double endTime = 10.;
   std::vector<std::pair<float, float>> waveformCache;
+  std::vector<GLuint> textures;
 
-  auto load(const std::string &) -> void;
+  struct Tex
+  {
+    GLuint texture;
+    std::list<Range>::iterator age;
+    bool isDirty = true;
+  };
+  std::unordered_map<Range, Tex, pair_hash> range2Tex;
+  std::list<Range> age;
+  std::unique_ptr<Spec> spec;
+  float brightness = 50.f;
+  float k = 0.01f;
+
   auto calcPicks() -> void;
   auto getMinMaxFromRange(int start, int end) -> std::pair<float, float>;
+  auto getTex(int start, int end) -> GLuint;
+  auto load(const std::string &) -> void;
+  auto populateTex(GLuint texture, bool &isDirty, int start, int end) -> GLuint;
 };

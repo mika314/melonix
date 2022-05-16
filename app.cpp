@@ -1,14 +1,9 @@
 #include "app.hpp"
 #include <SDL.h>
+#include <algorithm>
 #include <functional>
 #include <imgui/imgui.h>
 #include <log/log.hpp>
-
-#if defined(IMGUI_IMPL_OPENGL_ES2)
-#include <SDL_opengles2.h>
-#else
-#include <SDL_opengl.h>
-#endif
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -25,13 +20,13 @@ auto App::draw() -> void
   {
     if (ImGui::BeginMenu("File"))
     {
-      if (ImGui::MenuItem("Open", "Ctrl+O"))
+      if (ImGui::MenuItem("Open"))
       {
         LOG("Open");
         postponedAction = [&]() { ImGui::OpenPopup("FileOpen"); };
       }
-      if (ImGui::MenuItem("Save"), "Ctrl+S") {}
-      if (ImGui::MenuItem("Quit"), "Ctrl+Q") {}
+      if (ImGui::MenuItem("Save")) {}
+      if (ImGui::MenuItem("Quit")) {}
       ImGui::EndMenu();
     }
     ImGui::EndMainMenuBar();
@@ -42,9 +37,25 @@ auto App::draw() -> void
   if (fileOpen.draw())
   {
     LOG("open", fileOpen.getSelectedFile());
+    spec = nullptr;
     load(fileOpen.getSelectedFile());
     calcPicks();
+    for (auto &r : range2Tex)
+      r.second.isDirty = true;
+    spec = std::make_unique<Spec>(std::span<float>{data, data + size});
   }
+
+  ImGui::Text("Range, s: <%f | %f>", startTime, endTime);
+  // brightnes
+  ImGui::SliderFloat("Brightness", &brightness, 0.0f, 100.0f);
+  float newK = pow(2, brightness / 10 + 9);
+  if (k != newK)
+  {
+    k = newK;
+    for (auto &r : range2Tex)
+      r.second.isDirty = true;
+  }
+  ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
 }
 
 auto App::calcPicks() -> void
@@ -136,7 +147,7 @@ auto App::glDraw() -> void
   const auto Height = io.DisplaySize.y;
   const auto Width = io.DisplaySize.x;
 
-  glViewport(0, 0, (int)io.DisplaySize.x, static_cast<int>(Height - 20 - Height * .9));
+  glViewport(0, 0, (int)io.DisplaySize.x, static_cast<int>(.1 * Height - 20));
   glMatrixMode(GL_PROJECTION);
   glLoadIdentity();
   glOrtho(0, Width, 2.f, -2.f, -1, 1);
@@ -169,6 +180,47 @@ auto App::glDraw() -> void
     glVertex2f(x + 1, minMax.second);
   }
   glEnd();
+
+  // draw spectogram
+  glViewport(0, static_cast<int>(Height - 20 - Height * .9), (int)io.DisplaySize.x, static_cast<int>(.9 * Height - 20));
+  glMatrixMode(GL_PROJECTION);
+  glLoadIdentity();
+  glOrtho(0, Width, -.05, 1.05f, -1, 1);
+  glEnable(GL_TEXTURE_1D);
+  glColor3f(1, 1, 1);
+
+  auto step = pow(2., 1. / 12.);
+
+  for (auto x = 0; x < Width; ++x)
+  {
+    const auto left = (1. * x / Width * (endTime - startTime) + startTime) * sampleRate;
+    const auto right = (1. * (x + 1) / Width * (endTime - startTime) + startTime) * sampleRate;
+    auto texture = getTex(left, right);
+    glBindTexture(GL_TEXTURE_1D, texture);
+
+    glBegin(GL_QUADS);
+    const auto range = 60;
+
+    auto freq = 55. / sampleRate * 2.;
+    for (auto i = 0; i < range; ++i)
+    {
+      glTexCoord1f(freq);
+      glVertex2f(x, 1.f * i / range);
+
+      glTexCoord1f(freq * step);
+      glVertex2f(x, 1.f * (i + 1) / range);
+
+      glTexCoord1f(freq * step);
+      glVertex2f(x + 1.f, 1.f * (i + 1) / range);
+
+      glTexCoord1f(freq);
+      glVertex2f(x + 1.f, 1.f * i / range);
+
+      freq *= step;
+    }
+    glEnd();
+  }
+  glDisable(GL_TEXTURE_1D);
 }
 
 auto App::load(const std::string &path) -> void
@@ -288,6 +340,9 @@ auto App::load(const std::string &path) -> void
 
 auto App::mouseMotion(int x, int /*y*/, int dx, int dy, uint32_t state) -> void
 {
+  if (size == 0)
+    return;
+
   if (state & SDL_BUTTON_RMASK)
   {
     ImGuiIO &io = ImGui::GetIO();
@@ -327,4 +382,131 @@ auto App::mouseMotion(int x, int /*y*/, int dx, int dy, uint32_t state) -> void
       waveformCache.clear();
     }
   }
+}
+
+auto App::getTex(int start, int end) -> GLuint
+{
+  const auto key = std::make_pair(start, end);
+  {
+    const auto it = range2Tex.find(key);
+    if (it != std::end(range2Tex))
+    {
+      age.erase(it->second.age);
+      age.push_front(key);
+      it->second.age = std::begin(age);
+
+      return populateTex(it->second.texture, it->second.isDirty, start, end);
+    }
+  }
+
+  {
+    if (range2Tex.size() < MaxRanges)
+    {
+      // add more textures
+      GLuint texture;
+      glGenTextures(1, &texture);
+
+      age.push_front(key);
+      auto tmp = range2Tex.insert(std::make_pair(key, Tex{texture, std::begin(age)}));
+      auto retIt = tmp.first;
+      return populateTex(texture, retIt->second.isDirty, start, end);
+    }
+    // recycle textures
+    // get the oldest texture
+    auto oldest = std::end(age);
+    --oldest;
+
+    age.erase(oldest);
+
+    const auto oldestKey = *oldest;
+    const auto retIt = range2Tex.find(oldestKey);
+    const auto ret = retIt->second.texture;
+    range2Tex.erase(retIt);
+
+    age.push_front(key);
+    range2Tex.insert(std::make_pair(key, Tex{ret, std::begin(age)}));
+
+    return populateTex(ret, retIt->second.isDirty, start, end);
+  }
+}
+
+auto App::populateTex(GLuint texture, bool &isDirty, int start, int end) -> GLuint
+{
+  glBindTexture(GL_TEXTURE_1D, texture);
+  glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+  glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+
+  std::vector<std::array<unsigned char, 3>> data;
+  if (!spec)
+  {
+    data.resize(16);
+    glTexImage1D(GL_TEXTURE_1D,    // target
+                 0,                // level
+                 3,                // internalFormat
+                 data.size(),      // width
+                 0,                // border
+                 GL_RGB,           // format
+                 GL_UNSIGNED_BYTE, // type
+                 data.data()       // data
+    );
+    return texture;
+  }
+
+  if (end - start < 4)
+  {
+    data.resize(16);
+    glTexImage1D(GL_TEXTURE_1D,    // target
+                 0,                // level
+                 3,                // internalFormat
+                 data.size(),      // width
+                 0,                // border
+                 GL_RGB,           // format
+                 GL_UNSIGNED_BYTE, // type
+                 data.data()       // data
+    );
+    return texture;
+  }
+
+  if (!isDirty)
+  {
+    return texture;
+  }
+
+  const auto s = spec->getSpec(static_cast<int>(start), static_cast<int>(end));
+
+  if (s.empty())
+  {
+    data.resize(16);
+    glTexImage1D(GL_TEXTURE_1D,    // target
+                 0,                // level
+                 3,                // internalFormat
+                 data.size(),      // width
+                 0,                // border
+                 GL_RGB,           // format
+                 GL_UNSIGNED_BYTE, // type
+                 data.data()       // data
+    );
+    return texture;
+  }
+
+  isDirty = false;
+
+  data.resize(s.size());
+  for (auto i = 0U; i < s.size(); ++i)
+  {
+    const auto tmp = static_cast<unsigned char>(std::clamp(s[i] * k, 0.f, 255.f));
+    data[i] = {tmp, tmp, tmp};
+  }
+
+  glTexImage1D(GL_TEXTURE_1D,    // target
+               0,                // level
+               3,                // internalFormat
+               data.size(),      // width
+               0,                // border
+               GL_RGB,           // format
+               GL_UNSIGNED_BYTE, // type
+               data.data()       // data
+  );
+
+  return texture;
 }
