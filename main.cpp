@@ -7,10 +7,10 @@
 #include "file_open.hpp"
 #include "imgui_impl_opengl3.h"
 #include "imgui_impl_sdl.h"
-#include <SDL.h>
 #include <functional>
 #include <imgui/imgui.h>
 #include <log/log.hpp>
+#include <sdlpp/sdlpp.hpp>
 #include <stdio.h>
 
 // Main code
@@ -19,11 +19,8 @@ int main(int, char **)
   // Setup SDL
   // (Some versions of SDL before <2.0.10 appears to have performance/stalling issues on a minority of Windows systems,
   // depending on whether SDL_INIT_GAMECONTROLLER is enabled or disabled.. updating to latest version of SDL is recommended!)
-  if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_GAMECONTROLLER) != 0)
-  {
-    printf("Error: %s\n", SDL_GetError());
-    return -1;
-  }
+
+  auto sdlInit = sdl::Init{SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_GAMECONTROLLER | SDL_INIT_AUDIO};
 
   // Decide GL+GLSL versions
 #if defined(IMGUI_IMPL_OPENGL_ES2)
@@ -124,22 +121,46 @@ int main(int, char **)
       if (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_CLOSE && event.window.windowID == SDL_GetWindowID(window))
         done = true;
 
-      // Redirect mouse motions to the app
-      if (io.WantCaptureMouse)
-        continue;
-      switch (event.type)
+      // Redirect mouse or keyboard to the app
+      if (!io.WantCaptureMouse)
       {
-      case SDL_MOUSEMOTION:
-        app.mouseMotion(
-          // x, y
-          event.motion.x,
-          event.motion.y,
-          // dx, dy
-          event.motion.xrel,
-          event.motion.yrel,
-          // buttons
-          event.motion.state);
-        break;
+        switch (event.type)
+        {
+        case SDL_MOUSEMOTION:
+          app.mouseMotion(
+            // x, y
+            event.motion.x,
+            event.motion.y,
+            // dx, dy
+            event.motion.xrel,
+            event.motion.yrel,
+            // buttons
+            event.motion.state);
+          break;
+        case SDL_MOUSEBUTTONDOWN:
+        case SDL_MOUSEBUTTONUP: {
+          app.mouseButton(
+            // x, y
+            event.button.x,
+            event.button.y,
+            // state
+            event.button.state,
+            // button
+            event.button.button);
+          break;
+        }
+        }
+      }
+      if (!io.WantCaptureKeyboard)
+      {
+        switch (event.type)
+        {
+        case SDL_KEYDOWN:
+          // toggle playback with the space bar
+          if (event.key.keysym.sym == SDLK_SPACE)
+            app.togglePlay();
+          break;
+        }
       }
     }
 

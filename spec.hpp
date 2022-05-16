@@ -22,8 +22,8 @@ private:
   mutable fftw_complex *output;
   std::atomic<bool> running{false};
   mutable std::mutex mutex;
-  std::thread thread;
   mutable std::unordered_set<Range, pair_hash> jobs;
+  std::thread thread;
 
   struct S
   {

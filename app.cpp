@@ -38,24 +38,94 @@ auto App::draw() -> void
   {
     LOG("open", fileOpen.getSelectedFile());
     spec = nullptr;
+    audio = nullptr;
+    startTime = 0.;
+    endTime = 10.;
+    cursor = 0;
     load(fileOpen.getSelectedFile());
     calcPicks();
     for (auto &r : range2Tex)
       r.second.isDirty = true;
+    auto want = [&]() {
+      SDL_AudioSpec want;
+      want.freq = sampleRate;
+      want.format = AUDIO_F32LSB;
+      want.channels = 1;
+      want.samples = 1024;
+      return want;
+    }();
+    SDL_AudioSpec have;
+    audio = std::make_unique<sdl::Audio>(nullptr, false, &want, &have, 0, [&](Uint8 *stream, int len) {
+      auto w = reinterpret_cast<float *>(stream);
+
+      if (cursor < 0 || cursor >= static_cast<int>(size))
+      {
+        isAudioPlaying = false;
+        audio->pause(true);
+        return;
+      }
+
+      auto dur = std::min(len / static_cast<int>(sizeof(float)), static_cast<int>(size) - cursor);
+      if (dur <= 0)
+      {
+        isAudioPlaying = false;
+        audio->pause(true);
+        return;
+      }
+
+      std::copy(data + cursor, data + cursor + dur, w);
+      LOG("audio", len, dur, cursor);
+      cursor += dur;
+    });
     spec = std::make_unique<Spec>(std::span<float>{data, data + size});
   }
 
-  ImGui::Text("Range, s: <%f | %f>", startTime, endTime);
-  // brightnes
-  ImGui::SliderFloat("Brightness", &brightness, 0.0f, 100.0f);
-  float newK = pow(2, brightness / 10 + 9);
-  if (k != newK)
   {
-    k = newK;
-    for (auto &r : range2Tex)
-      r.second.isDirty = true;
+    ImGui::Begin("Control Center");
+    ImGui::Text("Range, s: <%f | %f>", startTime, endTime);
+    ImGui::Checkbox("Follow", &followMode);
+    ImGui::SameLine();
+    // play/stop button
+    if (ImGui::Button(isAudioPlaying ? "Stop" : "Play"))
+      togglePlay();
+    // brightnes
+    ImGui::SliderFloat("Brightness", &brightness, 0.0f, 100.0f);
+    float newK = pow(2, brightness / 10 + 9);
+    if (k != newK)
+    {
+      k = newK;
+      for (auto &r : range2Tex)
+        r.second.isDirty = true;
+    }
+    ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
+    ImGui::End();
   }
-  ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
+
+  if (audio)
+  {
+    audio->lock();
+    const auto c = cursor;
+    audio->unlock();
+    if (c > endTime * sampleRate)
+      followMode = true;
+    if (followMode)
+    {
+      ImGuiIO &io = ImGui::GetIO();
+
+      const auto Width = io.DisplaySize.x;
+      const auto cursorSec = 1. * c / sampleRate;
+      const auto r = endTime - startTime;
+      const auto desieredStart = cursorSec - r / 5;
+      const auto newStart = startTime + std::floor((desieredStart - startTime) * 0.2 * Width / r) * r / Width;
+      const auto newEnd = newStart + r;
+      if (newStart != startTime || newEnd != endTime)
+      {
+        startTime = newStart;
+        endTime = newEnd;
+        waveformCache.clear();
+      }
+    }
+  }
 }
 
 auto App::calcPicks() -> void
@@ -150,7 +220,7 @@ auto App::glDraw() -> void
   glViewport(0, 0, (int)io.DisplaySize.x, static_cast<int>(.1 * Height - 20));
   glMatrixMode(GL_PROJECTION);
   glLoadIdentity();
-  glOrtho(0, Width, 2.f, -2.f, -1, 1);
+  glOrtho(0, Width, 1.3f, -1.3f, -1, 1);
   // Our state
   ImVec4 clear_color = ImVec4(0.45f, 0.0f, 0.30f, 1.00f);
   glClearColor(clear_color.x * clear_color.w, clear_color.y * clear_color.w, clear_color.z * clear_color.w, clear_color.w);
@@ -221,6 +291,12 @@ auto App::glDraw() -> void
     glEnd();
   }
   glDisable(GL_TEXTURE_1D);
+
+  glColor3f(1.f, 0.f, 0.5f);
+  glBegin(GL_LINES);
+  glVertex2f((1. * cursor / sampleRate - startTime) / (endTime - startTime) * Width, 0.f);
+  glVertex2f((1. * cursor / sampleRate - startTime) / (endTime - startTime) * Width, 1.f);
+  glEnd();
 }
 
 auto App::load(const std::string &path) -> void
@@ -343,18 +419,17 @@ auto App::mouseMotion(int x, int /*y*/, int dx, int dy, uint32_t state) -> void
   if (size == 0)
     return;
 
+  ImGuiIO &io = ImGui::GetIO();
+  const auto Width = io.DisplaySize.x;
   if (state & SDL_BUTTON_RMASK)
   {
-    ImGuiIO &io = ImGui::GetIO();
-    const auto Width = io.DisplaySize.x;
-
     auto modState = SDL_GetModState();
     const auto leftLimit = std::max(-(endTime - startTime) * 0.5, -.5 * size / sampleRate);
     const auto rightLimit = std::min(size / sampleRate + (endTime - startTime) * 0.5, 1.5 * size / sampleRate);
     if ((modState & (KMOD_LCTRL | KMOD_RCTRL)) == 0)
     {
       // panning
-      const auto dt = 1. * dx / Width * (endTime - startTime);
+      const auto dt = 1. * dx * (endTime - startTime) / Width;
       const auto newStartTime = startTime - dt;
 
       if (newStartTime < leftLimit)
@@ -369,6 +444,7 @@ auto App::mouseMotion(int x, int /*y*/, int dx, int dy, uint32_t state) -> void
       startTime = newStartTime;
       endTime = newEndTime;
       waveformCache.clear();
+      followMode = false;
     }
     else
     {
@@ -380,7 +456,16 @@ auto App::mouseMotion(int x, int /*y*/, int dx, int dy, uint32_t state) -> void
       startTime = (newStartTime >= leftLimit && newStartTime <= rightLimit) ? newStartTime : startTime;
       endTime = (newEndTime >= leftLimit && newEndTime <= rightLimit) ? newEndTime : endTime;
       waveformCache.clear();
+      followMode = false;
     }
+  }
+  else if (state & SDL_BUTTON_LMASK)
+  {
+    if (!audio)
+      return;
+    audio->lock();
+    cursor = std::clamp(static_cast<int>(x * (endTime - startTime) * sampleRate / Width + startTime * sampleRate), 0, static_cast<int>(size - 1));
+    audio->unlock();
   }
 }
 
@@ -509,4 +594,36 @@ auto App::populateTex(GLuint texture, bool &isDirty, int start, int end) -> GLui
   );
 
   return texture;
+}
+
+auto App::mouseButton(int x, int /*y*/, uint32_t state, uint8_t button) -> void
+{
+  LOG("mouseButton", x, state, static_cast<int>(button));
+  // set the cursor on left mouse button
+  if (button == SDL_BUTTON_LEFT)
+  {
+    if (state == SDL_PRESSED)
+    {
+      ImGuiIO &io = ImGui::GetIO();
+      (void)io;
+
+      const auto Width = io.DisplaySize.x;
+      if (!audio)
+        return;
+      audio->lock();
+      cursor = std::clamp(static_cast<int>(x * (endTime - startTime) * sampleRate / Width + startTime * sampleRate), 0, static_cast<int>(size - 1));
+      audio->unlock();
+    }
+  }
+}
+
+auto App::togglePlay() -> void
+{
+  if (!audio)
+    return;
+  if (isAudioPlaying)
+    audio->pause(true);
+  else
+    audio->pause(false);
+  isAudioPlaying = !isAudioPlaying;
 }

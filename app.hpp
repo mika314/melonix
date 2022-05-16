@@ -3,6 +3,7 @@
 #include "range.hpp"
 #include "spec.hpp"
 #include <list>
+#include <sdlpp/sdlpp.hpp>
 #include <unordered_map>
 
 #if defined(IMGUI_IMPL_OPENGL_ES2)
@@ -17,6 +18,8 @@ public:
   auto draw() -> void;
   auto glDraw() -> void;
   auto mouseMotion(int x, int y, int dx, int dy, uint32_t state) -> void;
+  auto mouseButton(int x, int y, uint32_t state, uint8_t button) -> void;
+  auto togglePlay() -> void;
 
 private:
   FileOpen fileOpen;
@@ -28,6 +31,9 @@ private:
   double endTime = 10.;
   std::vector<std::pair<float, float>> waveformCache;
   std::vector<GLuint> textures;
+  int cursor = 0;
+  bool isAudioPlaying = false;
+  bool followMode = false;
 
   struct Tex
   {
@@ -40,6 +46,7 @@ private:
   std::unique_ptr<Spec> spec;
   float brightness = 50.f;
   float k = 0.01f;
+  std::unique_ptr<sdl::Audio> audio;
 
   auto calcPicks() -> void;
   auto getMinMaxFromRange(int start, int end) -> std::pair<float, float>;
