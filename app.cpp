@@ -2,7 +2,6 @@
 #include <SDL.h>
 #include <algorithm>
 #include <functional>
-#include <imgui/imgui.h>
 #include <log/log.hpp>
 
 extern "C" {
@@ -37,15 +36,14 @@ auto App::draw() -> void
   if (fileOpen.draw())
   {
     LOG("open", fileOpen.getSelectedFile());
+    specCache = nullptr;
     spec = nullptr;
     audio = nullptr;
     startTime = 0.;
-    endTime = 10.;
+    rangeTime = 10.;
     cursor = 0;
     load(fileOpen.getSelectedFile());
     calcPicks();
-    for (auto &r : range2Tex)
-      r.second.isDirty = true;
     auto want = [&]() {
       SDL_AudioSpec want;
       want.freq = sampleRate;
@@ -82,7 +80,7 @@ auto App::draw() -> void
 
   {
     ImGui::Begin("Control Center");
-    ImGui::Text("Range, s: <%f | %f>", startTime, endTime);
+    ImGui::Text("<%.2f %.2f %.2f>", startTime, sampleRate == 0 ? 0. : 1. * cursor / sampleRate, startTime + rangeTime);
     ImGui::Checkbox("Follow", &followMode);
     ImGui::SameLine();
     // play/stop button
@@ -94,10 +92,9 @@ auto App::draw() -> void
     if (k != newK)
     {
       k = newK;
-      for (auto &r : range2Tex)
-        r.second.isDirty = true;
+      specCache = nullptr;
     }
-    ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
+    ImGui::Text("FPS: %.1f (%.3f ms)", ImGui::GetIO().Framerate, 1000.0f / ImGui::GetIO().Framerate);
     ImGui::End();
   }
 
@@ -106,22 +103,16 @@ auto App::draw() -> void
     audio->lock();
     const auto c = cursor;
     audio->unlock();
-    if (c > endTime * sampleRate)
+    if (c > (startTime + rangeTime) * sampleRate && isAudioPlaying)
       followMode = true;
     if (followMode)
     {
-      ImGuiIO &io = ImGui::GetIO();
-
-      const auto Width = io.DisplaySize.x;
       const auto cursorSec = 1. * c / sampleRate;
-      const auto r = endTime - startTime;
-      const auto desieredStart = cursorSec - r / 5;
-      const auto newStart = startTime + std::floor((desieredStart - startTime) * 0.2 * Width / r) * r / Width;
-      const auto newEnd = newStart + r;
-      if (newStart != startTime || newEnd != endTime)
+      const auto desieredStart = cursorSec - rangeTime / 5;
+      const auto newStart = startTime + (desieredStart - startTime) * 0.2;
+      if (newStart != startTime)
       {
         startTime = newStart;
-        endTime = newEnd;
         waveformCache.clear();
       }
     }
@@ -234,8 +225,8 @@ auto App::glDraw() -> void
   {
     for (auto x = 0; x < Width; ++x)
     {
-      const auto left = (1. * x / Width * (endTime - startTime) + startTime) * sampleRate;
-      const auto right = (1. * (x + 1) / Width * (endTime - startTime) + startTime) * sampleRate;
+      const auto left = (1. * x / Width * rangeTime + startTime) * sampleRate;
+      const auto right = (1. * (x + 1) / Width * rangeTime + startTime) * sampleRate;
       auto minMax = getMinMaxFromRange(left, right);
       waveformCache.push_back(minMax);
     }
@@ -263,9 +254,7 @@ auto App::glDraw() -> void
 
   for (auto x = 0; x < Width; ++x)
   {
-    const auto left = (1. * x / Width * (endTime - startTime) + startTime) * sampleRate;
-    const auto right = (1. * (x + 1) / Width * (endTime - startTime) + startTime) * sampleRate;
-    auto texture = getTex(left, right);
+    auto texture = getTex(startTime + x * rangeTime / Width);
     glBindTexture(GL_TEXTURE_1D, texture);
 
     glBegin(GL_QUADS);
@@ -294,8 +283,8 @@ auto App::glDraw() -> void
 
   glColor3f(1.f, 0.f, 0.5f);
   glBegin(GL_LINES);
-  glVertex2f((1. * cursor / sampleRate - startTime) / (endTime - startTime) * Width, 0.f);
-  glVertex2f((1. * cursor / sampleRate - startTime) / (endTime - startTime) * Width, 1.f);
+  glVertex2f((1. * cursor / sampleRate - startTime) / rangeTime * Width, 0.f);
+  glVertex2f((1. * cursor / sampleRate - startTime) / rangeTime * Width, 1.f);
   glEnd();
 }
 
@@ -424,25 +413,23 @@ auto App::mouseMotion(int x, int /*y*/, int dx, int dy, uint32_t state) -> void
   if (state & SDL_BUTTON_RMASK)
   {
     auto modState = SDL_GetModState();
-    const auto leftLimit = std::max(-(endTime - startTime) * 0.5, -.5 * size / sampleRate);
-    const auto rightLimit = std::min(size / sampleRate + (endTime - startTime) * 0.5, 1.5 * size / sampleRate);
+    const auto leftLimit = std::max(-rangeTime * 0.5, -.5 * size / sampleRate);
+    const auto rightLimit = std::min(size / sampleRate + rangeTime * 0.5, 1.5 * size / sampleRate);
     if ((modState & (KMOD_LCTRL | KMOD_RCTRL)) == 0)
     {
       // panning
-      const auto dt = 1. * dx * (endTime - startTime) / Width;
+      const auto dt = 1. * dx * rangeTime / Width;
       const auto newStartTime = startTime - dt;
 
       if (newStartTime < leftLimit)
         return;
       if (newStartTime > rightLimit)
         return;
-      const auto newEndTime = endTime - dt;
-      if (newEndTime < leftLimit)
+      if (newStartTime + rangeTime < leftLimit)
         return;
-      if (newEndTime > rightLimit)
+      if (newStartTime + rangeTime > rightLimit)
         return;
       startTime = newStartTime;
-      endTime = newEndTime;
       waveformCache.clear();
       followMode = false;
     }
@@ -450,12 +437,18 @@ auto App::mouseMotion(int x, int /*y*/, int dx, int dy, uint32_t state) -> void
     {
       // zoom in or zoom out
       const auto zoom = 1. + 0.01 * dy;
-      const auto cursorPos = 1. * x / Width * (endTime - startTime) + startTime;
+      const auto cursorPos = 1. * x / Width * rangeTime + startTime;
       const auto newStartTime = (startTime - cursorPos) * zoom + cursorPos;
-      const auto newEndTime = (endTime - cursorPos) * zoom + cursorPos;
+      const auto newEndTime = (startTime + rangeTime - cursorPos) * zoom + cursorPos;
       startTime = (newStartTime >= leftLimit && newStartTime <= rightLimit) ? newStartTime : startTime;
-      endTime = (newEndTime >= leftLimit && newEndTime <= rightLimit) ? newEndTime : endTime;
+      if (newEndTime >= leftLimit && newEndTime <= rightLimit)
+        rangeTime = newEndTime - startTime;
+      else if (newEndTime < leftLimit)
+        rangeTime = 10.;
+      else if (newEndTime > rightLimit)
+        rangeTime = rightLimit - startTime;
       waveformCache.clear();
+      specCache = nullptr;
       followMode = false;
     }
   }
@@ -464,67 +457,23 @@ auto App::mouseMotion(int x, int /*y*/, int dx, int dy, uint32_t state) -> void
     if (!audio)
       return;
     audio->lock();
-    cursor = std::clamp(static_cast<int>(x * (endTime - startTime) * sampleRate / Width + startTime * sampleRate), 0, static_cast<int>(size - 1));
+    cursor = std::clamp(static_cast<int>(x * rangeTime * sampleRate / Width + startTime * sampleRate), 0, static_cast<int>(size - 1));
     audio->unlock();
   }
 }
 
-auto App::getTex(int start, int end) -> GLuint
+auto App::getTex(double start) -> GLuint
 {
-  const auto key = std::make_pair(start, end);
-  {
-    const auto it = range2Tex.find(key);
-    if (it != std::end(range2Tex))
-    {
-      age.erase(it->second.age);
-      age.push_front(key);
-      it->second.age = std::begin(age);
-
-      return populateTex(it->second.texture, it->second.isDirty, start, end);
-    }
-  }
-
-  {
-    if (range2Tex.size() < MaxRanges)
-    {
-      // add more textures
-      GLuint texture;
-      glGenTextures(1, &texture);
-
-      age.push_front(key);
-      auto tmp = range2Tex.insert(std::make_pair(key, Tex{texture, std::begin(age)}));
-      auto retIt = tmp.first;
-      return populateTex(texture, retIt->second.isDirty, start, end);
-    }
-    // recycle textures
-    // get the oldest texture
-    auto oldest = std::end(age);
-    --oldest;
-
-    age.erase(oldest);
-
-    const auto oldestKey = *oldest;
-    const auto retIt = range2Tex.find(oldestKey);
-    const auto ret = retIt->second.texture;
-    range2Tex.erase(retIt);
-
-    age.push_front(key);
-    range2Tex.insert(std::make_pair(key, Tex{ret, std::begin(age)}));
-
-    return populateTex(ret, retIt->second.isDirty, start, end);
-  }
-}
-
-auto App::populateTex(GLuint texture, bool &isDirty, int start, int end) -> GLuint
-{
-  glBindTexture(GL_TEXTURE_1D, texture);
-  glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-  glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-
-  std::vector<std::array<unsigned char, 3>> data;
+  ImGuiIO &io = ImGui::GetIO();
+  const auto Width = io.DisplaySize.x;
   if (!spec)
   {
+    static Texture nullTexture;
+    static std::vector<std::array<unsigned char, 3>> data;
     data.resize(16);
+    glBindTexture(GL_TEXTURE_1D, nullTexture.get());
+    glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexImage1D(GL_TEXTURE_1D,    // target
                  0,                // level
                  3,                // internalFormat
@@ -534,66 +483,11 @@ auto App::populateTex(GLuint texture, bool &isDirty, int start, int end) -> GLui
                  GL_UNSIGNED_BYTE, // type
                  data.data()       // data
     );
-    return texture;
+    return nullTexture.get();
   }
-
-  if (end - start < 4)
-  {
-    data.resize(16);
-    glTexImage1D(GL_TEXTURE_1D,    // target
-                 0,                // level
-                 3,                // internalFormat
-                 data.size(),      // width
-                 0,                // border
-                 GL_RGB,           // format
-                 GL_UNSIGNED_BYTE, // type
-                 data.data()       // data
-    );
-    return texture;
-  }
-
-  if (!isDirty)
-  {
-    return texture;
-  }
-
-  const auto s = spec->getSpec(static_cast<int>(start), static_cast<int>(end));
-
-  if (s.empty())
-  {
-    data.resize(16);
-    glTexImage1D(GL_TEXTURE_1D,    // target
-                 0,                // level
-                 3,                // internalFormat
-                 data.size(),      // width
-                 0,                // border
-                 GL_RGB,           // format
-                 GL_UNSIGNED_BYTE, // type
-                 data.data()       // data
-    );
-    return texture;
-  }
-
-  isDirty = false;
-
-  data.resize(s.size());
-  for (auto i = 0U; i < s.size(); ++i)
-  {
-    const auto tmp = static_cast<unsigned char>(std::clamp(s[i] * k, 0.f, 255.f));
-    data[i] = {tmp, tmp, tmp};
-  }
-
-  glTexImage1D(GL_TEXTURE_1D,    // target
-               0,                // level
-               3,                // internalFormat
-               data.size(),      // width
-               0,                // border
-               GL_RGB,           // format
-               GL_UNSIGNED_BYTE, // type
-               data.data()       // data
-  );
-
-  return texture;
+  if (!specCache)
+    specCache = std::make_unique<SpecCache>(*spec, k, Width, rangeTime, sampleRate);
+  return specCache->getTex(start);
 }
 
 auto App::mouseButton(int x, int /*y*/, uint32_t state, uint8_t button) -> void
@@ -611,7 +505,7 @@ auto App::mouseButton(int x, int /*y*/, uint32_t state, uint8_t button) -> void
       if (!audio)
         return;
       audio->lock();
-      cursor = std::clamp(static_cast<int>(x * (endTime - startTime) * sampleRate / Width + startTime * sampleRate), 0, static_cast<int>(size - 1));
+      cursor = std::clamp(static_cast<int>(x * rangeTime * sampleRate / Width + startTime * sampleRate), 0, static_cast<int>(size - 1));
       audio->unlock();
     }
   }

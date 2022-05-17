@@ -2,6 +2,8 @@
 #include "file_open.hpp"
 #include "range.hpp"
 #include "spec.hpp"
+#include "spec_cache.hpp"
+#include <imgui/imgui.h>
 #include <list>
 #include <sdlpp/sdlpp.hpp>
 #include <unordered_map>
@@ -28,29 +30,20 @@ private:
   int sampleRate = 0;
   std::vector<std::vector<std::pair<float, float>>> picks;
   double startTime = 0.;
-  double endTime = 10.;
+  double rangeTime = 10.;
   std::vector<std::pair<float, float>> waveformCache;
-  std::vector<GLuint> textures;
   int cursor = 0;
   bool isAudioPlaying = false;
   bool followMode = false;
 
-  struct Tex
-  {
-    GLuint texture;
-    std::list<Range>::iterator age;
-    bool isDirty = true;
-  };
-  std::unordered_map<Range, Tex, pair_hash> range2Tex;
-  std::list<Range> age;
   std::unique_ptr<Spec> spec;
   float brightness = 50.f;
   float k = 0.01f;
   std::unique_ptr<sdl::Audio> audio;
+  std::unique_ptr<SpecCache> specCache;
 
   auto calcPicks() -> void;
   auto getMinMaxFromRange(int start, int end) -> std::pair<float, float>;
-  auto getTex(int start, int end) -> GLuint;
+  auto getTex(double start) -> GLuint;
   auto load(const std::string &) -> void;
-  auto populateTex(GLuint texture, bool &isDirty, int start, int end) -> GLuint;
 };

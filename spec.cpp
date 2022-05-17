@@ -54,7 +54,7 @@ auto Spec::internalGetSpec(int start, int end) const -> std::vector<float>
       if (i >= start)
         input[p][0] = wav[i];
       else
-        input[p][0] = expf(-0.00025f * (start - i)) * wav[i];
+        input[p][0] = expf(-2.5e-4f * (start - i)) * wav[i];
     }
     ++p;
   }
