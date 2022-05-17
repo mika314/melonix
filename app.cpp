@@ -201,11 +201,16 @@ auto App::getMinMaxFromRange(int start, int end) -> std::pair<float, float>
 
 auto App::glDraw() -> void
 {
+  const auto notesRange = 60;
+
   ImGuiIO &io = ImGui::GetIO();
-  (void)io;
 
   const auto Height = io.DisplaySize.y;
   const auto Width = io.DisplaySize.x;
+
+  // Enable alpha blending
+  glEnable(GL_BLEND);
+  glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
   glViewport(0, 0, (int)io.DisplaySize.x, static_cast<int>(.1 * Height - 20));
   glMatrixMode(GL_PROJECTION);
@@ -257,30 +262,67 @@ auto App::glDraw() -> void
     glBindTexture(GL_TEXTURE_1D, texture);
 
     glBegin(GL_QUADS);
-    const auto range = 60;
 
     auto freq = 55. / sampleRate * 2.;
-    for (auto i = 0; i < range; ++i)
+    for (auto i = 0; i < notesRange; ++i)
     {
       glTexCoord1f(freq);
-      glVertex2f(x, 1.f * i / range);
+      glVertex2f(x, 1.f * i / notesRange);
 
       glTexCoord1f(freq * step);
-      glVertex2f(x, 1.f * (i + 1) / range);
+      glVertex2f(x, 1.f * (i + 1) / notesRange);
 
       glTexCoord1f(freq * step);
-      glVertex2f(x + 1.f, 1.f * (i + 1) / range);
+      glVertex2f(x + 1.f, 1.f * (i + 1) / notesRange);
 
       glTexCoord1f(freq);
-      glVertex2f(x + 1.f, 1.f * i / range);
+      glVertex2f(x + 1.f, 1.f * i / notesRange);
 
       freq *= step;
     }
     glEnd();
   }
+  // draw piano
+  glColor4f(1.f, 1.f, 1.f, .06f);
+  glBindTexture(GL_TEXTURE_1D, pianoTexture);
+  glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+  glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+  std::vector<std::array<unsigned char, 3>> pianoData;
+  pianoData.resize(.9 * Height - 20);
+  auto lastNote = 0U;
+  for (auto i = 0U; i < pianoData.size(); ++i)
+  {
+    const auto tmp = i * notesRange + pianoData.size() / 2;
+    const auto note = tmp / pianoData.size();
+    auto isBlack = std::array{false, true, false, false, true, false, true, false, false, true, false, true}[note % 12];
+    unsigned char c = (note == lastNote) ? (isBlack ? 128 : 255) : 0;
+    pianoData[i] = std::array{c, c, c};
+    lastNote = note;
+  }
+  glTexImage1D(GL_TEXTURE_1D,    // target
+               0,                // level
+               3,                // internalFormat
+               pianoData.size(), // width
+               0,                // border
+               GL_RGB,           // format
+               GL_UNSIGNED_BYTE, // type
+               pianoData.data()  // data
+  );
+
+  glBegin(GL_QUADS);
+  glTexCoord1f(0);
+  glVertex2f(0, 0);
+  glTexCoord1f(0);
+  glVertex2f(Width, 0);
+  glTexCoord1f(1);
+  glVertex2f(Width, 1);
+  glTexCoord1f(1);
+  glVertex2f(0, 1);
+  glEnd();
+
   glDisable(GL_TEXTURE_1D);
 
-  glColor3f(1.f, 0.f, 0.5f);
+  glColor4f(1.f, 0.f, 0.5f, 0.25f);
   glBegin(GL_LINES);
   glVertex2f((1. * displayCursor / sampleRate - startTime) / rangeTime * Width, 0.f);
   glVertex2f((1. * displayCursor / sampleRate - startTime) / rangeTime * Width, 1.f);
@@ -511,6 +553,7 @@ auto App::mouseButton(int x, int /*y*/, uint32_t state, uint8_t button) -> void
         return;
       ImGuiIO &io = ImGui::GetIO();
       (void)io;
+      followMode = false;
 
       const auto Width = io.DisplaySize.x;
       if (!audio)

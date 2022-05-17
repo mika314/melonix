@@ -42,6 +42,7 @@ private:
   std::unique_ptr<sdl::Audio> audio;
   std::unique_ptr<SpecCache> specCache;
   double displayCursor;
+  Texture pianoTexture;
 
   auto calcPicks() -> void;
   auto getMinMaxFromRange(int start, int end) -> std::pair<float, float>;
