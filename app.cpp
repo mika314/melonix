@@ -578,3 +578,33 @@ auto App::togglePlay() -> void
     audio->pause(false);
   isAudioPlaying = !isAudioPlaying;
 }
+
+auto App::cursorLeft() -> void
+{
+  if (size < 2)
+    return;
+  ImGuiIO &io = ImGui::GetIO();
+  (void)io;
+  followMode = false;
+  const auto Width = io.DisplaySize.x;
+  if (!audio)
+    return;
+  audio->lock();
+  cursor = std::clamp(static_cast<int>(cursor - 4 * rangeTime / Width * sampleRate), 0, static_cast<int>(size - 1));
+  audio->unlock();
+}
+
+auto App::cursorRight() -> void
+{
+  if (size < 2)
+    return;
+  ImGuiIO &io = ImGui::GetIO();
+  (void)io;
+  followMode = false;
+  const auto Width = io.DisplaySize.x;
+  if (!audio)
+    return;
+  audio->lock();
+  cursor = std::clamp(static_cast<int>(cursor + 4 * rangeTime / Width * sampleRate), 0, static_cast<int>(size - 1));
+  audio->unlock();
+}

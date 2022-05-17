@@ -115,6 +115,28 @@ int main(int, char **)
     SDL_Event event;
     while (SDL_PollEvent(&event))
     {
+      switch (event.type)
+      {
+      case SDL_KEYDOWN:
+        // toggle playback with the space bar
+        if (event.key.keysym.sym == SDLK_SPACE)
+        {
+          app.togglePlay();
+          continue;
+        }
+        // left and right arrow keys
+        else if (event.key.keysym.sym == SDLK_LEFT)
+        {
+          app.cursorLeft();
+          continue;
+        }
+        else if (event.key.keysym.sym == SDLK_RIGHT)
+        {
+          app.cursorRight();
+          continue;
+        }
+        break;
+      }
       ImGui_ImplSDL2_ProcessEvent(&event);
       if (event.type == SDL_QUIT)
         done = true;
@@ -149,17 +171,6 @@ int main(int, char **)
             event.button.button);
           break;
         }
-        }
-      }
-      if (!io.WantCaptureKeyboard)
-      {
-        switch (event.type)
-        {
-        case SDL_KEYDOWN:
-          // toggle playback with the space bar
-          if (event.key.keysym.sym == SDLK_SPACE)
-            app.togglePlay();
-          break;
         }
       }
     }

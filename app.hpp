@@ -22,6 +22,8 @@ public:
   auto mouseMotion(int x, int y, int dx, int dy, uint32_t state) -> void;
   auto mouseButton(int x, int y, uint32_t state, uint8_t button) -> void;
   auto togglePlay() -> void;
+  auto cursorLeft() -> void;
+  auto cursorRight() -> void;
 
 private:
   FileOpen fileOpen;
