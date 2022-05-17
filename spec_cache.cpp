@@ -1,5 +1,6 @@
 #include "spec_cache.hpp"
 #include <algorithm>
+#include <cmath>
 
 SpecCache::SpecCache(Spec &spec, float k, int screenWidth, double rangeTime, int sampleRate)
   : spec(spec), k(k), width(screenWidth), rangeTime(rangeTime), sampleRate(sampleRate)
@@ -75,8 +76,23 @@ auto SpecCache::populateTex(GLuint texture, bool &isDirty, int key) -> GLuint
     data.resize(s.size());
     for (auto i = 0U; i < s.size(); ++i)
     {
-      const auto tmp = static_cast<unsigned char>(std::clamp(s[i] * k, 0.f, 255.f));
-      data[i] = {tmp, tmp, tmp};
+      const auto tmp = std::clamp(s[i] * k, 0.f, 255.f);
+      if (tmp < 255 / 3)
+      {
+        data[i] = {static_cast<unsigned char>(tmp), 0, 0};
+      }
+      else if (tmp < 2 * 255 / 3)
+      {
+        const auto a = (tmp - 255 / 3) / (255 / 3) * 3.141592 / 2;
+        const auto r = static_cast<unsigned char>(tmp * std::cos(a));
+        const auto g = static_cast<unsigned char>(tmp * std::sin(a));
+        data[i] = std::array<unsigned char, 3>{r, g, 0};
+      }
+      else
+      {
+        const auto k = static_cast<unsigned char>((tmp - 2 * 255 / 3) * 3);
+        data[i] = std::array<unsigned char, 3>{k, static_cast<unsigned char>(tmp), k};
+      }
     }
   }
 

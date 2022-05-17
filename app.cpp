@@ -202,6 +202,7 @@ auto App::getMinMaxFromRange(int start, int end) -> std::pair<float, float>
 auto App::glDraw() -> void
 {
   const auto notesRange = 60;
+  const auto startFreq = 55.;
 
   ImGuiIO &io = ImGui::GetIO();
 
@@ -217,10 +218,9 @@ auto App::glDraw() -> void
   glLoadIdentity();
   glOrtho(0, Width, 1.3f, -1.3f, -1, 1);
   // Our state
-  ImVec4 clear_color = ImVec4(0.45f, 0.0f, 0.30f, 1.00f);
-  glClearColor(clear_color.x * clear_color.w, clear_color.y * clear_color.w, clear_color.z * clear_color.w, clear_color.w);
+  ImVec4 clearColor = ImVec4(0.f, 0.f, 0.f, 1.f);
+  glClearColor(clearColor.x * clearColor.w, clearColor.y * clearColor.w, clearColor.z * clearColor.w, clearColor.w);
   glClear(GL_COLOR_BUFFER_BIT);
-  glColor3f(1.0f, 1.0f, 1.0f);
 
   if (waveformCache.size() != Width)
     waveformCache.clear();
@@ -237,6 +237,7 @@ auto App::glDraw() -> void
   }
 
   // draw waveform
+  glColor3f(1.f, 0.f, 1.f);
   glBegin(GL_LINE_STRIP);
   for (auto x = 0; x < Width; ++x)
   {
@@ -247,12 +248,12 @@ auto App::glDraw() -> void
   glEnd();
 
   // draw spectogram
-  glViewport(0, static_cast<int>(Height - 20 - Height * .9), (int)io.DisplaySize.x, static_cast<int>(.9 * Height - 20));
+  glViewport(0, static_cast<int>(.1 * Height - 20), (int)io.DisplaySize.x, static_cast<int>(Height - 20));
   glMatrixMode(GL_PROJECTION);
   glLoadIdentity();
   glOrtho(0, Width, -.05, 1.05f, -1, 1);
   glEnable(GL_TEXTURE_1D);
-  glColor3f(1, 1, 1);
+  glColor3f(1.f, 1.f, 1.f);
 
   auto step = pow(2., 1. / 12.);
 
@@ -263,7 +264,7 @@ auto App::glDraw() -> void
 
     glBegin(GL_QUADS);
 
-    auto freq = 55. / sampleRate * 2.;
+    auto freq = startFreq / sampleRate * 2.;
     for (auto i = 0; i < notesRange; ++i)
     {
       glTexCoord1f(freq);
@@ -460,16 +461,12 @@ auto App::mouseMotion(int x, int /*y*/, int dx, int dy, uint32_t state) -> void
     {
       // panning
       const auto dt = 1. * dx * rangeTime / Width;
-      const auto newStartTime = startTime - dt;
+      auto newStartTime = startTime - dt;
 
       if (newStartTime < leftLimit)
-        return;
-      if (newStartTime > rightLimit)
-        return;
-      if (newStartTime + rangeTime < leftLimit)
-        return;
+        newStartTime = leftLimit;
       if (newStartTime + rangeTime > rightLimit)
-        return;
+        newStartTime = rightLimit - rangeTime;
       startTime = newStartTime;
       waveformCache.clear();
       followMode = false;
@@ -499,7 +496,7 @@ auto App::mouseMotion(int x, int /*y*/, int dx, int dy, uint32_t state) -> void
       return;
     audio->lock();
     cursor = [&]() {
-      const auto tmp = static_cast<int>(x * rangeTime * sampleRate / Width + startTime * sampleRate);
+      const auto tmp = std::clamp(static_cast<int>(x * rangeTime * sampleRate / Width + startTime * sampleRate), 0, static_cast<int>(size - 1));
       for (auto i = std::clamp(tmp, 0, static_cast<int>(size - 1)); i < std::clamp(tmp + 1000, 0, static_cast<int>(size - 2)); ++i)
         if (data[i] <= 0 && data[i + 1] >= 0)
           return i;
@@ -560,7 +557,7 @@ auto App::mouseButton(int x, int /*y*/, uint32_t state, uint8_t button) -> void
         return;
       audio->lock();
       cursor = [&]() {
-        const auto tmp = static_cast<int>(x * rangeTime * sampleRate / Width + startTime * sampleRate);
+        const auto tmp = std::clamp(static_cast<int>(x * rangeTime * sampleRate / Width + startTime * sampleRate), 0, static_cast<int>(size - 1));
         for (auto i = std::clamp(tmp, 0, static_cast<int>(size - 1)); i < std::clamp(tmp + 1000, 0, static_cast<int>(size - 2)); ++i)
           if (data[i] <= 0 && data[i + 1] >= 0)
             return i;
