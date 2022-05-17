@@ -44,19 +44,18 @@ auto Spec::getSpec(int start, int end) const -> std::vector<float>
 auto Spec::internalGetSpec(int start, int end) const -> std::vector<float>
 {
   auto p = 0;
-  for (auto i = end - SpectrSize; i < end; ++i)
+  for (auto i = end - SpectrSize; i < end; ++i, ++p)
   {
     input[p][1] = 0;
     if ((i >= static_cast<int>(wav.size()) || i < 0))
-      input[p][0] = 0;
-    else
     {
-      if (i >= start)
-        input[p][0] = wav[i];
-      else
-        input[p][0] = expf(-2.5e-4f * (start - i)) * wav[i];
+      input[p][0] = 0;
+      continue;
     }
-    ++p;
+    if (i >= start)
+      input[p][0] = wav[i];
+    else
+      input[p][0] = expf(-2.5e-4f * (start - i)) * wav[i];
   }
   fftw_execute(plan);
   std::vector<float> ret;
@@ -80,7 +79,7 @@ auto Spec::run() -> void
 
     if (!job)
     {
-      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
       continue;
     }
 

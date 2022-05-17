@@ -41,6 +41,7 @@ private:
   float k = 0.01f;
   std::unique_ptr<sdl::Audio> audio;
   std::unique_ptr<SpecCache> specCache;
+  double displayCursor;
 
   auto calcPicks() -> void;
   auto getMinMaxFromRange(int start, int end) -> std::pair<float, float>;

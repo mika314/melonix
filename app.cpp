@@ -72,7 +72,6 @@ auto App::draw() -> void
       }
 
       std::copy(data + cursor, data + cursor + dur, w);
-      LOG("audio", len, dur, cursor);
       cursor += dur;
     });
     spec = std::make_unique<Spec>(std::span<float>{data, data + size});
@@ -97,19 +96,19 @@ auto App::draw() -> void
     ImGui::Text("FPS: %.1f (%.3f ms)", ImGui::GetIO().Framerate, 1000.0f / ImGui::GetIO().Framerate);
     ImGui::End();
   }
-
   if (audio)
   {
     audio->lock();
-    const auto c = cursor;
+    displayCursor = cursor;
     audio->unlock();
-    if (c > (startTime + rangeTime) * sampleRate && isAudioPlaying)
+    if (displayCursor > (startTime + rangeTime) * sampleRate && isAudioPlaying)
       followMode = true;
     if (followMode)
     {
-      const auto cursorSec = 1. * c / sampleRate;
+      const auto cursorSec = 1. * displayCursor / sampleRate;
       const auto desieredStart = cursorSec - rangeTime / 5;
-      const auto newStart = startTime + (desieredStart - startTime) * 0.2;
+      const auto newStart =
+        (std::abs(desieredStart - startTime) > 4 * 1024. / sampleRate) ? (startTime + (desieredStart - startTime) * 0.2) : desieredStart;
       if (newStart != startTime)
       {
         startTime = newStart;
@@ -283,8 +282,8 @@ auto App::glDraw() -> void
 
   glColor3f(1.f, 0.f, 0.5f);
   glBegin(GL_LINES);
-  glVertex2f((1. * cursor / sampleRate - startTime) / rangeTime * Width, 0.f);
-  glVertex2f((1. * cursor / sampleRate - startTime) / rangeTime * Width, 1.f);
+  glVertex2f((1. * displayCursor / sampleRate - startTime) / rangeTime * Width, 0.f);
+  glVertex2f((1. * displayCursor / sampleRate - startTime) / rangeTime * Width, 1.f);
   glEnd();
 }
 
@@ -457,7 +456,13 @@ auto App::mouseMotion(int x, int /*y*/, int dx, int dy, uint32_t state) -> void
     if (!audio)
       return;
     audio->lock();
-    cursor = std::clamp(static_cast<int>(x * rangeTime * sampleRate / Width + startTime * sampleRate), 0, static_cast<int>(size - 1));
+    cursor = [&]() {
+      const auto tmp = static_cast<int>(x * rangeTime * sampleRate / Width + startTime * sampleRate);
+      for (auto i = std::clamp(tmp, 0, static_cast<int>(size - 1)); i < std::clamp(tmp + 1000, 0, static_cast<int>(size - 2)); ++i)
+        if (data[i] <= 0 && data[i + 1] >= 0)
+          return i;
+      return tmp;
+    }();
     audio->unlock();
   }
 }
@@ -468,21 +473,25 @@ auto App::getTex(double start) -> GLuint
   const auto Width = io.DisplaySize.x;
   if (!spec)
   {
-    static Texture nullTexture;
-    static std::vector<std::array<unsigned char, 3>> data;
-    data.resize(16);
-    glBindTexture(GL_TEXTURE_1D, nullTexture.get());
-    glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexImage1D(GL_TEXTURE_1D,    // target
-                 0,                // level
-                 3,                // internalFormat
-                 data.size(),      // width
-                 0,                // border
-                 GL_RGB,           // format
-                 GL_UNSIGNED_BYTE, // type
-                 data.data()       // data
-    );
+    static Texture nullTexture = []() {
+      Texture nullTexture;
+      static std::vector<std::array<unsigned char, 3>> data;
+      data.resize(16);
+
+      glBindTexture(GL_TEXTURE_1D, nullTexture.get());
+      glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+      glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+      glTexImage1D(GL_TEXTURE_1D,    // target
+                   0,                // level
+                   3,                // internalFormat
+                   data.size(),      // width
+                   0,                // border
+                   GL_RGB,           // format
+                   GL_UNSIGNED_BYTE, // type
+                   data.data()       // data
+      );
+      return nullTexture;
+    }();
     return nullTexture.get();
   }
   if (!specCache)
@@ -492,12 +501,14 @@ auto App::getTex(double start) -> GLuint
 
 auto App::mouseButton(int x, int /*y*/, uint32_t state, uint8_t button) -> void
 {
-  LOG("mouseButton", x, state, static_cast<int>(button));
   // set the cursor on left mouse button
+
   if (button == SDL_BUTTON_LEFT)
   {
     if (state == SDL_PRESSED)
     {
+      if (size < 2)
+        return;
       ImGuiIO &io = ImGui::GetIO();
       (void)io;
 
@@ -505,7 +516,13 @@ auto App::mouseButton(int x, int /*y*/, uint32_t state, uint8_t button) -> void
       if (!audio)
         return;
       audio->lock();
-      cursor = std::clamp(static_cast<int>(x * rangeTime * sampleRate / Width + startTime * sampleRate), 0, static_cast<int>(size - 1));
+      cursor = [&]() {
+        const auto tmp = static_cast<int>(x * rangeTime * sampleRate / Width + startTime * sampleRate);
+        for (auto i = std::clamp(tmp, 0, static_cast<int>(size - 1)); i < std::clamp(tmp + 1000, 0, static_cast<int>(size - 2)); ++i)
+          if (data[i] <= 0 && data[i + 1] >= 0)
+            return i;
+        return tmp;
+      }();
       audio->unlock();
     }
   }

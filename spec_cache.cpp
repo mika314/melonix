@@ -42,9 +42,9 @@ auto SpecCache::getTex(double start) -> GLuint
     range2Tex.erase(retIt);
 
     age.push_front(key);
-    range2Tex.insert(std::make_pair(key, Tex{std::move(ret), std::begin(age)}));
+    auto tmp = range2Tex.insert(std::make_pair(key, Tex{std::move(ret), std::begin(age)}));
 
-    return populateTex(ret, retIt->second.isDirty, key);
+    return populateTex(tmp.first->second.texture.get(), tmp.first->second.isDirty, key);
   }
 }
 
@@ -63,29 +63,21 @@ auto SpecCache::populateTex(GLuint texture, bool &isDirty, int key) -> GLuint
   const auto pixelSize = std::max(4. / sampleRate, rangeTime / width);
   const auto s = spec.get().getSpec(static_cast<int>(start * sampleRate), static_cast<int>((start + pixelSize) * sampleRate));
 
-  std::vector<std::array<unsigned char, 3>> data;
   if (s.empty())
   {
-    data.resize(16);
-    glTexImage1D(GL_TEXTURE_1D,    // target
-                 0,                // level
-                 3,                // internalFormat
-                 data.size(),      // width
-                 0,                // border
-                 GL_RGB,           // format
-                 GL_UNSIGNED_BYTE, // type
-                 data.data()       // data
-    );
-    return texture;
+    data.clear();
+    for (auto i = 0; i < 16; ++i)
+      data.push_back({static_cast<unsigned char>(0), static_cast<unsigned char>(0), static_cast<unsigned char>(0)});
   }
-
-  isDirty = false;
-
-  data.resize(s.size());
-  for (auto i = 0U; i < s.size(); ++i)
+  else
   {
-    const auto tmp = static_cast<unsigned char>(std::clamp(s[i] * k, 0.f, 255.f));
-    data[i] = {tmp, tmp, tmp};
+    isDirty = false;
+    data.resize(s.size());
+    for (auto i = 0U; i < s.size(); ++i)
+    {
+      const auto tmp = static_cast<unsigned char>(std::clamp(s[i] * k, 0.f, 255.f));
+      data[i] = {tmp, tmp, tmp};
+    }
   }
 
   glTexImage1D(GL_TEXTURE_1D,    // target

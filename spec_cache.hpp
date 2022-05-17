@@ -31,5 +31,7 @@ private:
   };
   std::unordered_map<int, Tex> range2Tex;
   std::list<int> age;
+  std::vector<std::array<unsigned char, 3>> data;
+
   auto populateTex(GLuint texture, bool &isDirty, int key) -> GLuint;
 };
