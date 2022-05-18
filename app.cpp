@@ -34,52 +34,13 @@ auto App::draw() -> void
     postponedAction();
 
   if (fileOpen.draw())
-  {
-    LOG("open", fileOpen.getSelectedFile());
-    specCache = nullptr;
-    spec = nullptr;
-    audio = nullptr;
-    startTime = 0.;
-    rangeTime = 10.;
-    cursor = 0;
-    load(fileOpen.getSelectedFile());
-    calcPicks();
-    auto want = [&]() {
-      SDL_AudioSpec want;
-      want.freq = sampleRate;
-      want.format = AUDIO_F32LSB;
-      want.channels = 1;
-      want.samples = 1024;
-      return want;
-    }();
-    SDL_AudioSpec have;
-    audio = std::make_unique<sdl::Audio>(nullptr, false, &want, &have, 0, [&](Uint8 *stream, int len) {
-      auto w = reinterpret_cast<float *>(stream);
-
-      if (cursor < 0 || cursor >= static_cast<int>(size))
-      {
-        isAudioPlaying = false;
-        audio->pause(true);
-        return;
-      }
-
-      auto dur = std::min(len / static_cast<int>(sizeof(float)), static_cast<int>(size) - cursor);
-      if (dur <= 0)
-      {
-        isAudioPlaying = false;
-        audio->pause(true);
-        return;
-      }
-
-      std::copy(data + cursor, data + cursor + dur, w);
-      cursor += dur;
-    });
-    spec = std::make_unique<Spec>(std::span<float>{data, data + size});
-  }
+    loadFile(fileOpen.getSelectedFile());
 
   {
     ImGui::Begin("Control Center");
     ImGui::Text("<%.2f %.2f %.2f>", startTime, sampleRate == 0 ? 0. : 1. * cursor / sampleRate, startTime + rangeTime);
+    ImGui::SameLine();
+    ImGui::Text("<%.2f %.2f>", startNote, startNote + rangeNote);
     ImGui::Checkbox("Follow", &followMode);
     ImGui::SameLine();
     // play/stop button
@@ -116,6 +77,50 @@ auto App::draw() -> void
       }
     }
   }
+}
+
+auto App::loadFile(const std::string &fileName) -> void
+{
+  LOG("open", fileName);
+  specCache = nullptr;
+  spec = nullptr;
+  audio = nullptr;
+  startTime = 0.;
+  rangeTime = 10.;
+  cursor = 0;
+  load(fileName);
+  calcPicks();
+  auto want = [&]() {
+    SDL_AudioSpec want;
+    want.freq = sampleRate;
+    want.format = AUDIO_F32LSB;
+    want.channels = 1;
+    want.samples = 1024;
+    return want;
+  }();
+  SDL_AudioSpec have;
+  audio = std::make_unique<sdl::Audio>(nullptr, false, &want, &have, 0, [&](Uint8 *stream, int len) {
+    auto w = reinterpret_cast<float *>(stream);
+
+    if (cursor < 0 || cursor >= static_cast<int>(size))
+    {
+      isAudioPlaying = false;
+      audio->pause(true);
+      return;
+    }
+
+    auto dur = std::min(len / static_cast<int>(sizeof(float)), static_cast<int>(size) - cursor);
+    if (dur <= 0)
+    {
+      isAudioPlaying = false;
+      audio->pause(true);
+      return;
+    }
+
+    std::copy(data + cursor, data + cursor + dur, w);
+    cursor += dur;
+  });
+  spec = std::make_unique<Spec>(std::span<float>{data, data + size});
 }
 
 auto App::calcPicks() -> void
@@ -201,8 +206,7 @@ auto App::getMinMaxFromRange(int start, int end) -> std::pair<float, float>
 
 auto App::glDraw() -> void
 {
-  const auto notesRange = 60;
-  const auto startFreq = 55.;
+  const auto startFreq = 55. * pow(2., (startNote - 24) / 12.);
 
   ImGuiIO &io = ImGui::GetIO();
 
@@ -213,10 +217,10 @@ auto App::glDraw() -> void
   glEnable(GL_BLEND);
   glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-  glViewport(0, 0, (int)io.DisplaySize.x, static_cast<int>(.1 * Height - 20));
+  glViewport(0, 0, (int)io.DisplaySize.x, static_cast<int>(.1 * Height));
   glMatrixMode(GL_PROJECTION);
   glLoadIdentity();
-  glOrtho(0, Width, 1.3f, -1.3f, -1, 1);
+  glOrtho(0, Width, 1.f, -1.f, -1, 1);
   // Our state
   ImVec4 clearColor = ImVec4(0.f, 0.f, 0.f, 1.f);
   glClearColor(clearColor.x * clearColor.w, clearColor.y * clearColor.w, clearColor.z * clearColor.w, clearColor.w);
@@ -248,10 +252,10 @@ auto App::glDraw() -> void
   glEnd();
 
   // draw spectogram
-  glViewport(0, static_cast<int>(.1 * Height - 20), (int)io.DisplaySize.x, static_cast<int>(Height - 20));
+  glViewport(0, static_cast<int>(.1 * Height), (int)io.DisplaySize.x, static_cast<int>(Height * 0.9 - 20));
   glMatrixMode(GL_PROJECTION);
   glLoadIdentity();
-  glOrtho(0, Width, -.05, 1.05f, -1, 1);
+  glOrtho(0, Width, 0.f, 1.f, -1, 1);
   glEnable(GL_TEXTURE_1D);
   glColor3f(1.f, 1.f, 1.f);
 
@@ -265,36 +269,36 @@ auto App::glDraw() -> void
     glBegin(GL_QUADS);
 
     auto freq = startFreq / sampleRate * 2.;
-    for (auto i = 0; i < notesRange; ++i)
+    for (auto i = 0; i < rangeNote; ++i)
     {
       glTexCoord1f(freq);
-      glVertex2f(x, 1.f * i / notesRange);
+      glVertex2f(x, 1.f * i / rangeNote);
 
       glTexCoord1f(freq * step);
-      glVertex2f(x, 1.f * (i + 1) / notesRange);
+      glVertex2f(x, 1.f * (i + 1) / rangeNote);
 
       glTexCoord1f(freq * step);
-      glVertex2f(x + 1.f, 1.f * (i + 1) / notesRange);
+      glVertex2f(x + 1.f, 1.f * (i + 1) / rangeNote);
 
       glTexCoord1f(freq);
-      glVertex2f(x + 1.f, 1.f * i / notesRange);
+      glVertex2f(x + 1.f, 1.f * i / rangeNote);
 
       freq *= step;
     }
     glEnd();
   }
   // draw piano
-  glColor4f(1.f, 1.f, 1.f, .06f);
+  glColor4f(1.f, 1.f, 1.f, .096f);
   glBindTexture(GL_TEXTURE_1D, pianoTexture);
   glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
   glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
   std::vector<std::array<unsigned char, 3>> pianoData;
   pianoData.resize(.9 * Height - 20);
-  auto lastNote = 0U;
+  auto lastNote = 0;
   for (auto i = 0U; i < pianoData.size(); ++i)
   {
-    const auto tmp = i * notesRange + pianoData.size() / 2;
-    const auto note = tmp / pianoData.size();
+    const auto tmp = i * rangeNote + pianoData.size() / 2;
+    const auto note = static_cast<int>(tmp / pianoData.size() + startNote);
     auto isBlack = std::array{false, true, false, false, true, false, true, false, false, true, false, true}[note % 12];
     unsigned char c = (note == lastNote) ? (isBlack ? 128 : 255) : 0;
     pianoData[i] = std::array{c, c, c};
@@ -323,6 +327,32 @@ auto App::glDraw() -> void
 
   glDisable(GL_TEXTURE_1D);
 
+  // draw markers
+  glBegin(GL_LINES);
+  for (const auto &marker : markers)
+  {
+    const auto x0 = (marker.time0 - startTime) * Width / rangeTime;
+    const auto y0 = (marker.note0 - startNote) / rangeNote;
+    const auto x = (marker.time - startTime) * Width / rangeTime;
+    const auto y = (marker.note - startNote) / rangeNote;
+    glColor3f(0.5f, 0.5f, 0.5f);
+    glVertex2f(x0, y0);
+    glVertex2f(x, y);
+
+    glVertex2f(x0 - 2, y0 - 0.0025f);
+    glVertex2f(x0 + 2, y0 + 0.0025f);
+    glVertex2f(x0 + 2, y0 - 0.0025f);
+    glVertex2f(x0 - 2, y0 + 0.0025f);
+
+    glColor3f(1.f, 1.f, 1.f);
+    glVertex2f(x - 2, y - 0.0025f);
+    glVertex2f(x + 2, y + 0.0025f);
+    glVertex2f(x + 2, y - 0.0025f);
+    glVertex2f(x - 2, y + 0.0025f);
+  }
+  glEnd();
+
+  // draw a scrubber
   glColor4f(1.f, 0.f, 0.5f, 0.25f);
   glBegin(GL_LINES);
   glVertex2f((1. * displayCursor / sampleRate - startTime) / rangeTime * Width, 0.f);
@@ -445,33 +475,20 @@ auto App::load(const std::string &path) -> void
   LOG("File loaded", path, "duration", 1. * size / sampleRate, "smaple rate", sampleRate);
 }
 
-auto App::mouseMotion(int x, int /*y*/, int dx, int dy, uint32_t state) -> void
+auto App::mouseMotion(int x, int y, int dx, int dy, uint32_t state) -> void
 {
   if (size == 0)
     return;
 
   ImGuiIO &io = ImGui::GetIO();
   const auto Width = io.DisplaySize.x;
-  if (state & SDL_BUTTON_RMASK)
+  const auto Height = io.DisplaySize.y * .9 - 20;
+  if (state & SDL_BUTTON_MMASK)
   {
     auto modState = SDL_GetModState();
     const auto leftLimit = std::max(-rangeTime * 0.5, -.5 * size / sampleRate);
     const auto rightLimit = std::min(size / sampleRate + rangeTime * 0.5, 1.5 * size / sampleRate);
-    if ((modState & (KMOD_LCTRL | KMOD_RCTRL)) == 0)
-    {
-      // panning
-      const auto dt = 1. * dx * rangeTime / Width;
-      auto newStartTime = startTime - dt;
-
-      if (newStartTime < leftLimit)
-        newStartTime = leftLimit;
-      if (newStartTime + rangeTime > rightLimit)
-        newStartTime = rightLimit - rangeTime;
-      startTime = newStartTime;
-      waveformCache.clear();
-      followMode = false;
-    }
-    else
+    if ((modState & (KMOD_LCTRL | KMOD_RCTRL)) != 0)
     {
       // zoom in or zoom out
       const auto zoom = 1. + 0.01 * dy;
@@ -489,20 +506,74 @@ auto App::mouseMotion(int x, int /*y*/, int dx, int dy, uint32_t state) -> void
       specCache = nullptr;
       followMode = false;
     }
+    else if ((modState & (KMOD_LALT | KMOD_RALT)) != 0)
+    {
+      {
+        // y motion vertical panning
+        const auto delta = 1. * dy * rangeNote / Height;
+        auto newStartNote = startNote + delta;
+        if (newStartNote < 0.)
+          newStartNote = 0.;
+        else if (newStartNote + rangeNote > 127.)
+          newStartNote = 127. - rangeNote;
+        startNote = newStartNote;
+      }
+      {
+        // x motion zoom
+        const auto zoom = 1. - 0.001 * dx;
+        const auto cursorPos = 1. * (Height + 20 - y) / Height * rangeNote + startNote;
+        const auto newStartNote = (startNote - cursorPos) * zoom + cursorPos;
+        const auto newEndNote = (startNote + rangeNote - cursorPos) * zoom + cursorPos;
+        startNote = (newStartNote >= 0. && newStartNote <= 127.) ? newStartNote : startNote;
+        if (newEndNote >= 0. && newEndNote <= 127.)
+          rangeNote = newEndNote - startNote;
+        else if (newEndNote < 0.)
+          rangeNote = 10.;
+        else if (newEndNote > 127.)
+          rangeNote = 127. - startNote;
+      }
+    }
+    else
+    {
+
+      // panning
+      const auto dt = 1. * dx * rangeTime / Width;
+      auto newStartTime = startTime - dt;
+
+      if (newStartTime < leftLimit)
+        newStartTime = leftLimit;
+      if (newStartTime + rangeTime > rightLimit)
+        newStartTime = rightLimit - rangeTime;
+      startTime = newStartTime;
+      waveformCache.clear();
+      followMode = false;
+    }
   }
   else if (state & SDL_BUTTON_LMASK)
   {
-    if (!audio)
-      return;
-    audio->lock();
-    cursor = [&]() {
-      const auto tmp = std::clamp(static_cast<int>(x * rangeTime * sampleRate / Width + startTime * sampleRate), 0, static_cast<int>(size - 1));
-      for (auto i = std::clamp(tmp, 0, static_cast<int>(size - 1)); i < std::clamp(tmp + 1000, 0, static_cast<int>(size - 2)); ++i)
-        if (data[i] <= 0 && data[i + 1] >= 0)
-          return i;
-      return tmp;
-    }();
-    audio->unlock();
+    if (movingMarker == std::end(markers))
+    {
+      if (!audio)
+        return;
+      audio->lock();
+      cursor = [&]() {
+        const auto tmp = std::clamp(static_cast<int>(x * rangeTime * sampleRate / Width + startTime * sampleRate), 0, static_cast<int>(size - 1));
+        for (auto i = std::clamp(tmp, 0, static_cast<int>(size - 1)); i < std::clamp(tmp + 1000, 0, static_cast<int>(size - 2)); ++i)
+          if (data[i] <= 0 && data[i + 1] >= 0)
+            return i;
+        return tmp;
+      }();
+      audio->unlock();
+    }
+    else
+    {
+      // convert x to time
+      const auto time = x * rangeTime / Width + startTime;
+      // convert y to note
+      const auto note = (Height - (y - 20)) * rangeNote / Height + startNote;
+      movingMarker->time = time;
+      movingMarker->note = note;
+    }
   }
 }
 
@@ -538,7 +609,7 @@ auto App::getTex(double start) -> GLuint
   return specCache->getTex(start);
 }
 
-auto App::mouseButton(int x, int /*y*/, uint32_t state, uint8_t button) -> void
+auto App::mouseButton(int x, int y, uint32_t state, uint8_t button) -> void
 {
   // set the cursor on left mouse button
 
@@ -549,21 +620,74 @@ auto App::mouseButton(int x, int /*y*/, uint32_t state, uint8_t button) -> void
       if (size < 2)
         return;
       ImGuiIO &io = ImGui::GetIO();
-      (void)io;
+
       followMode = false;
 
       const auto Width = io.DisplaySize.x;
-      if (!audio)
+      const auto Height = io.DisplaySize.y * .9 - 20;
+
+      auto it = std::find_if(std::begin(markers), std::end(markers), [&](const auto &m) {
+        const auto xPx = (m.time - startTime) * Width / rangeTime;
+        const auto yPx = -(m.note - startNote) * Height / rangeNote + Height + 20;
+        return std::abs(xPx - x) < 10 && std::abs(yPx - y) < 10;
+      });
+
+      if (it != std::end(markers))
+      {
+        // Start moving the marker
+        movingMarker = it;
+      }
+      else
+      {
+        movingMarker = std::end(markers);
+        if (!audio)
+          return;
+        audio->lock();
+        cursor = [&]() {
+          const auto tmp = std::clamp(static_cast<int>(x * rangeTime * sampleRate / Width + startTime * sampleRate), 0, static_cast<int>(size - 1));
+          for (auto i = std::clamp(tmp, 0, static_cast<int>(size - 1)); i < std::clamp(tmp + 1000, 0, static_cast<int>(size - 2)); ++i)
+            if (data[i] <= 0 && data[i + 1] >= 0)
+              return i;
+          return tmp;
+        }();
+        audio->unlock();
+      }
+    }
+    else
+    {
+      if (movingMarker != std::end(markers))
+      {
+        // Stop moving the marker
+        movingMarker = std::end(markers);
+      }
+    }
+  }
+  else if (button == SDL_BUTTON_RIGHT)
+  {
+    if (state == SDL_PRESSED)
+    {
+      if (size < 2)
         return;
-      audio->lock();
-      cursor = [&]() {
-        const auto tmp = std::clamp(static_cast<int>(x * rangeTime * sampleRate / Width + startTime * sampleRate), 0, static_cast<int>(size - 1));
-        for (auto i = std::clamp(tmp, 0, static_cast<int>(size - 1)); i < std::clamp(tmp + 1000, 0, static_cast<int>(size - 2)); ++i)
-          if (data[i] <= 0 && data[i + 1] >= 0)
-            return i;
-        return tmp;
-      }();
-      audio->unlock();
+      ImGuiIO &io = ImGui::GetIO();
+      const auto Width = io.DisplaySize.x;
+      const auto Height = io.DisplaySize.y * .9 - 20;
+      // convert x to time
+      const auto time = x * rangeTime / Width + startTime;
+      // convert y to note
+      const auto note = (Height - (y - 20)) * rangeNote / Height + startNote;
+
+      auto it = std::find_if(std::begin(markers), std::end(markers), [&](const auto &m) {
+        const auto xPx = (m.time - startTime) * Width / rangeTime;
+        const auto yPx = -(m.note - startNote) * Height / rangeNote + Height + 20;
+        return std::abs(xPx - x) < 10 && std::abs(yPx - y) < 10;
+      });
+
+      if (it != std::end(markers))
+        // remove marker
+        markers.erase(it);
+      else
+        // add marker
+        markers.push_back({time, note, time, note});
     }
   }
 }

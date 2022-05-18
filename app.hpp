@@ -1,5 +1,6 @@
 #pragma once
 #include "file_open.hpp"
+#include "marker.hpp"
 #include "range.hpp"
 #include "spec.hpp"
 #include "spec_cache.hpp"
@@ -24,6 +25,7 @@ public:
   auto togglePlay() -> void;
   auto cursorLeft() -> void;
   auto cursorRight() -> void;
+  auto loadFile(const std::string &) -> void;
 
 private:
   FileOpen fileOpen;
@@ -33,6 +35,8 @@ private:
   std::vector<std::vector<std::pair<float, float>>> picks;
   double startTime = 0.;
   double rangeTime = 10.;
+  double startNote = 24;
+  double rangeNote = 60;
   std::vector<std::pair<float, float>> waveformCache;
   int cursor = 0;
   bool isAudioPlaying = false;
@@ -45,6 +49,8 @@ private:
   std::unique_ptr<SpecCache> specCache;
   double displayCursor;
   Texture pianoTexture;
+  std::vector<Marker> markers;
+  std::vector<Marker>::iterator movingMarker;
 
   auto calcPicks() -> void;
   auto getMinMaxFromRange(int start, int end) -> std::pair<float, float>;
