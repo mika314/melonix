@@ -1,6 +1,7 @@
 #include "app.hpp"
 #include <SDL.h>
 #include <algorithm>
+#include <cmath>
 #include <functional>
 #include <log/log.hpp>
 
@@ -60,6 +61,27 @@ auto App::draw() -> void
     ImGui::Text("FPS: %.1f (%.3f ms)", io.Framerate, 1000.0f / io.Framerate);
     ImGui::End();
   }
+  if (selectedMarker != std::end(markers))
+  {
+    ImGui::Begin("Marker");
+    if (ImGui::Button("0##dt"))
+    {
+      selectedMarker->dTime = 0;
+      invalidateCache();
+    }
+    ImGui::SameLine();
+    if (ImGui::InputDouble("dt", &selectedMarker->dTime, .1, .5, "%.2f s"))
+      invalidateCache();
+    if (ImGui::Button("0##pitchBend"))
+    {
+      selectedMarker->pitchBend = 0;
+      invalidateCache();
+    }
+    ImGui::SameLine();
+    if (ImGui::InputDouble("pitch bend", &selectedMarker->pitchBend, .1, 1., "%.2f"))
+      invalidateCache();
+    ImGui::End();
+  }
   if (audio)
   {
     audio->lock();
@@ -109,7 +131,7 @@ auto App::loadFile(const std::string &fileName) -> void
         const auto isZeroCrossing = data[idx] < 0 && data[idx + 1] >= 0;
         if (isZeroCrossing)
         {
-          grains.insert(std::make_pair(start, std::span<float>(data + start, idx - start)));
+          grains.insert(std::make_pair(start, std::make_tuple(std::span<float>(data + start, idx - start), idx - start - grainSize)));
           LOG("grain", start, idx - start);
           start = idx;
           found = true;
@@ -125,7 +147,7 @@ auto App::loadFile(const std::string &fileName) -> void
           const auto isZeroCrossing = data[i] < 0 && data[i + 1] >= 0;
           if (isZeroCrossing)
           {
-            grains.insert(std::make_pair(start, std::span<float>(data + start, i - start)));
+            grains.insert(std::make_pair(start, std::make_tuple(std::span<float>(data + start, i - start), i - start - grainSize)));
             LOG("grain", start, i - start);
             start = i;
             found = true;
@@ -154,21 +176,13 @@ auto App::loadFile(const std::string &fileName) -> void
     return want;
   }();
   SDL_AudioSpec have;
-
   audio = std::make_unique<sdl::Audio>(nullptr, false, &want, &have, 0, [&](Uint8 *stream, int len) {
     auto w = reinterpret_cast<float *>(stream);
 
     if (cursorSec < 0 || cursorSec >= duration())
       isAudioPlaying = false;
 
-    if (!isAudioPlaying)
-    {
-      audio->pause(true);
-      restWav.clear();
-      return;
-    }
-
-    auto dur = len / static_cast<int>(sizeof(float));
+    auto dur = static_cast<int>(len / sizeof(float));
     if (!restWav.empty())
     {
       auto sz = std::min(static_cast<int>(restWav.size()), dur);
@@ -184,6 +198,21 @@ auto App::loadFile(const std::string &fileName) -> void
       cursorSec += 1. * sz / sampleRate;
     }
 
+    if (!isAudioPlaying)
+    {
+      audio->pause(true);
+      for (; dur > 0; --dur, ++w)
+        *w = 0;
+      for (int i = 0; i < 100; ++i)
+      {
+        *w *= .01 * i;
+        --w;
+      }
+      restWav.clear();
+
+      return;
+    }
+
     while (dur > 0)
     {
       const auto sample = time2Sample(cursorSec);
@@ -197,15 +226,39 @@ auto App::loadFile(const std::string &fileName) -> void
         return;
       }
 
-      const auto grain = it->second;
+      const auto grain = std::get<0>(it->second);
+      const auto nextGrainFirstSample = [&]() {
+        auto sz = 0;
+        for (auto i = 0; i < dur; ++i)
+        {
+          auto idxF = double{};
+          std::modf(i * rate + bias, &idxF);
+          const auto idx = static_cast<size_t>(idxF);
+          if (idx >= grain.size())
+            break;
+          ++sz;
+        };
+        const auto sample = time2Sample(cursorSec + 1. * sz / sampleRate);
+        auto it = grains.lower_bound(sample);
+        if (it == std::end(grains))
+          return 0.f;
+
+        return std::get<0>(it->second).front();
+      }();
+      const auto diff = &grain[0] - &prevGrain[prevGrain.size()];
+      if (diff != 0)
+        LOG(diff, grain.size(), std::get<1>(it->second), bias);
+      prevGrain = grain;
 
       auto sz = 0;
       for (auto i = 0; i < dur; ++i)
       {
-        const auto idx = static_cast<size_t>(i * rate + bias);
+        auto idxF = double{};
+        const auto curBias = std::modf(i * rate + bias, &idxF);
+        const auto idx = static_cast<size_t>(idxF);
         if (idx >= grain.size())
           break;
-        *w = grain[idx];
+        *w = (1. - curBias) * grain[idx] + curBias * (idx + 1 < grain.size() ? grain[idx + 1] : nextGrainFirstSample);
         ++w;
         ++sz;
       }
@@ -214,20 +267,22 @@ auto App::loadFile(const std::string &fileName) -> void
       restWav.clear();
       for (auto i = sz;; ++i)
       {
-        const auto idx = static_cast<size_t>(i * rate + bias);
+        auto idxF = double{};
+        const auto curBias = std::modf(i * rate + bias, &idxF);
+        const auto idx = static_cast<size_t>(idxF);
         if (idx >= grain.size())
         {
-          bias = std::fmod(i * rate + bias, 1.f);
+          bias = curBias;
           break;
         }
-        restWav.push_back(grain[idx]);
+        restWav.push_back((1. - curBias) * grain[idx] + curBias * (idx + 1 < grain.size() ? grain[idx + 1] : nextGrainFirstSample));
       }
       dur -= sz;
     }
   });
   spec = std::make_unique<Spec>(std::span<float>{data, data + size});
   markers.clear();
-  movingMarker = std::end(markers);
+  selectedMarker = std::end(markers);
 }
 
 auto App::calcPicks() -> void
@@ -313,8 +368,6 @@ auto App::getMinMaxFromRange(int start, int end) -> std::pair<float, float>
 
 auto App::glDraw() -> void
 {
-  const auto startFreq = 55. * pow(2., (startNote - 24) / 12.);
-
   const auto &io = ImGui::GetIO();
   const auto Height = io.DisplaySize.y;
   const auto Width = io.DisplaySize.x;
@@ -374,7 +427,8 @@ auto App::glDraw() -> void
 
     glBegin(GL_QUADS);
 
-    auto pitchBend = time2PitchBend(startTime + x * rangeTime / Width);
+    const auto pitchBend = time2PitchBend(startTime + x * rangeTime / Width);
+    const auto startFreq = 55. * pow(2., (startNote - 24) / 12.);
     auto freq = startFreq / sampleRate * 2.;
     for (auto i = 0; i < rangeNote; ++i)
     {
@@ -449,7 +503,25 @@ auto App::glDraw() -> void
   }
   glEnd();
 
-  // draw markers
+  drawMarkers();
+
+  // draw a scrubber
+  glViewport(0, 0, (int)io.DisplaySize.x, static_cast<int>(Height - 20));
+  glMatrixMode(GL_PROJECTION);
+  glLoadIdentity();
+  glOrtho(0, Width, 0.f, 1.f, -1, 1);
+
+  glColor4f(1.f, 0.f, 0.5f, 0.25f);
+  glBegin(GL_LINES);
+  glVertex2f((1. * displayCursor - startTime) / rangeTime * Width, 0.f);
+  glVertex2f((1. * displayCursor - startTime) / rangeTime * Width, 1.0f);
+  glEnd();
+}
+
+auto App::drawMarkers() -> void
+{
+  const auto &io = ImGui::GetIO();
+  const auto Width = io.DisplaySize.x;
   glBegin(GL_LINES);
   for (const auto &marker : markers)
   {
@@ -466,24 +538,15 @@ auto App::glDraw() -> void
     glVertex2f(x0 + 2, y0 - 0.0025f);
     glVertex2f(x0 - 2, y0 + 0.0025f);
 
-    glColor3f(0.f, 0.5f, 1.f);
+    if (selectedMarker != std::end(markers) && &marker == &(*selectedMarker))
+      glColor3f(0.f, 1.0f, 1.f);
+    else
+      glColor3f(0.f, 0.5f, 1.f);
     glVertex2f(x - 2, y - 0.0025f);
     glVertex2f(x + 2, y + 0.0025f);
     glVertex2f(x + 2, y - 0.0025f);
     glVertex2f(x - 2, y + 0.0025f);
   }
-  glEnd();
-
-  // draw a scrubber
-  glViewport(0, 0, (int)io.DisplaySize.x, static_cast<int>(Height - 20));
-  glMatrixMode(GL_PROJECTION);
-  glLoadIdentity();
-  glOrtho(0, Width, 0.f, 1.f, -1, 1);
-
-  glColor4f(1.f, 0.f, 0.5f, 0.25f);
-  glBegin(GL_LINES);
-  glVertex2f((1. * displayCursor - startTime) / rangeTime * Width, 0.f);
-  glVertex2f((1. * displayCursor - startTime) / rangeTime * Width, 1.0f);
   glEnd();
 }
 
@@ -679,31 +742,33 @@ auto App::mouseMotion(int x, int y, int dx, int dy, uint32_t state) -> void
   }
   else if (state & SDL_BUTTON_LMASK)
   {
-    if (movingMarker == std::end(markers))
+    if (y > Height)
     {
-      if (y > Height)
-      {
-        if (!audio)
-          return;
-        audio->lock();
-        cursorSec = std::clamp(x * rangeTime / Width + startTime, 0., duration());
-        audio->unlock();
-      }
+      if (!audio)
+        return;
+      audio->lock();
+      cursorSec = std::clamp(x * rangeTime / Width + startTime, 0., duration());
+      audio->unlock();
     }
-    else
+    else if (selectedMarker != std::end(markers))
     {
       const auto dX = dx * rangeTime / Width;
       const auto dY = dy * rangeNote / Height;
-      movingMarker->dTime += dX;
-      movingMarker->pitchBend -= dY;
-      sample2TimeCache.clear();
-      time2SampleCache.clear();
-      time2PitchBendCache.clear();
-      waveformCache.clear();
-      if (specCache)
-        specCache->clear();
+      selectedMarker->dTime += dX;
+      selectedMarker->pitchBend -= dY;
+      invalidateCache();
     }
   }
+}
+
+auto App::invalidateCache() const -> void
+{
+  sample2TimeCache.clear();
+  time2SampleCache.clear();
+  time2PitchBendCache.clear();
+  waveformCache.clear();
+  if (specCache)
+    specCache->clear();
 }
 
 auto App::getTex(double start) -> GLuint
@@ -745,7 +810,6 @@ auto App::mouseButton(int x, int y, uint32_t state, uint8_t button) -> void
   const auto Width = io.DisplaySize.x;
   const auto Height = io.DisplaySize.y * .9 - 20;
 
-  movingMarker = std::end(markers);
   std::sort(markers.begin(), markers.end(), [](const auto &a, const auto &b) { return a.sample < b.sample; });
   if (button == SDL_BUTTON_LEFT)
   {
@@ -781,20 +845,14 @@ auto App::mouseButton(int x, int y, uint32_t state, uint8_t button) -> void
         const auto pitchBend = time2PitchBend(time);
         markers.push_back(Marker{sample, note - pitchBend, 0., pitchBend});
         std::sort(markers.begin(), markers.end(), [](const auto &a, const auto &b) { return a.sample < b.sample; });
-        sample2TimeCache.clear();
-        time2SampleCache.clear();
-        time2PitchBendCache.clear();
-        waveformCache.clear();
-        if (specCache)
-          specCache->clear();
-
-        movingMarker = std::end(markers);
+        invalidateCache();
+        selectedMarker = std::find_if(std::begin(markers), std::end(markers), [sample](const auto &m) { return m.sample == sample; });
       }
       else
       {
         // move marker
         LOG("Moving marker", it->sample, "dTime", it->dTime, "pitchBend", it->pitchBend);
-        movingMarker = it;
+        selectedMarker = it;
       }
     }
   }
@@ -815,12 +873,8 @@ auto App::mouseButton(int x, int y, uint32_t state, uint8_t button) -> void
     if (it != std::end(markers))
     {
       markers.erase(it);
-      sample2TimeCache.clear();
-      time2SampleCache.clear();
-      time2PitchBendCache.clear();
-      waveformCache.clear();
-      if (specCache)
-        specCache->clear();
+      selectedMarker = std::end(markers);
+      invalidateCache();
     }
   }
 }
@@ -853,8 +907,7 @@ auto App::cursorRight() -> void
 {
   if (size < 2)
     return;
-  ImGuiIO &io = ImGui::GetIO();
-  (void)io;
+  const auto &io = ImGui::GetIO();
   followMode = false;
   const auto Width = io.DisplaySize.x;
   if (!audio)
