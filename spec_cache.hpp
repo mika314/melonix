@@ -1,6 +1,7 @@
 #pragma once
 #include "spec.hpp"
 #include "texture.hpp"
+#include <functional>
 #include <imgui/imgui.h>
 
 #if defined(IMGUI_IMPL_OPENGL_ES2)
@@ -12,15 +13,16 @@
 class SpecCache
 {
 public:
-  SpecCache(Spec &, float k, int screenWidth, double rangeTime, int sampleRate);
+  SpecCache(Spec &, float k, int screenWidth, double rangeTime, std::function<int(double)> time2Sample);
   auto getTex(double time) -> GLuint;
+  auto clear() -> void;
 
 private:
   std::reference_wrapper<Spec> spec;
   float k;
   int width;
   double rangeTime;
-  int sampleRate;
+  std::function<int(double)> time2Sample;
   struct Tex
   {
     explicit Tex(std::list<int>::iterator age) : age(std::move(age)) {}

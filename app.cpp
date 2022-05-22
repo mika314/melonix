@@ -38,7 +38,7 @@ auto App::draw() -> void
 
   {
     ImGui::Begin("Control Center");
-    ImGui::Text("<%.2f %.2f %.2f>", startTime, sampleRate == 0 ? 0. : 1. * cursor / sampleRate, startTime + rangeTime);
+    ImGui::Text("<%.2f %.2f %.2f>", startTime, cursorSec, startTime + rangeTime);
     ImGui::SameLine();
     ImGui::Text("<%.2f %.2f>", startNote, startNote + rangeNote);
     ImGui::Checkbox("Follow", &followMode);
@@ -54,20 +54,20 @@ auto App::draw() -> void
       k = newK;
       specCache = nullptr;
     }
-    ImGui::Text("FPS: %.1f (%.3f ms)", ImGui::GetIO().Framerate, 1000.0f / ImGui::GetIO().Framerate);
+    const auto &io = ImGui::GetIO();
+    ImGui::Text("FPS: %.1f (%.3f ms)", io.Framerate, 1000.0f / io.Framerate);
     ImGui::End();
   }
   if (audio)
   {
     audio->lock();
-    displayCursor = cursor;
+    displayCursor = cursorSec;
     audio->unlock();
-    if (displayCursor > (startTime + rangeTime) * sampleRate && isAudioPlaying)
+    if (displayCursor > startTime + rangeTime && isAudioPlaying)
       followMode = true;
     if (followMode)
     {
-      const auto cursorSec = 1. * displayCursor / sampleRate;
-      const auto desieredStart = cursorSec - rangeTime / 5;
+      const auto desieredStart = displayCursor - rangeTime / 5;
       const auto newStart =
         (std::abs(desieredStart - startTime) > 4 * 1024. / sampleRate) ? (startTime + (desieredStart - startTime) * 0.2) : desieredStart;
       if (newStart != startTime)
@@ -87,8 +87,26 @@ auto App::loadFile(const std::string &fileName) -> void
   audio = nullptr;
   startTime = 0.;
   rangeTime = 10.;
-  cursor = 0;
+  cursorSec = 0;
   load(fileName);
+
+  {
+    // generate grains
+    grains.clear();
+    const auto grainSize = 1000;
+    auto start = 0;
+    for (auto i = start + grainSize; i < static_cast<int>(size); ++i)
+    {
+      const auto isZeroCrossing = data[i - 1] < 0 && data[i] >= 0 && data[i] - data[i - 1] < 1.2E-2f;
+      if (isZeroCrossing && i - start > grainSize)
+      {
+        grains.insert(std::make_pair(start, std::span<float>(data + start, i - start)));
+        LOG(i - start);
+        start = i;
+      }
+    }
+  }
+
   calcPicks();
   auto want = [&]() {
     SDL_AudioSpec want;
@@ -99,28 +117,77 @@ auto App::loadFile(const std::string &fileName) -> void
     return want;
   }();
   SDL_AudioSpec have;
+
   audio = std::make_unique<sdl::Audio>(nullptr, false, &want, &have, 0, [&](Uint8 *stream, int len) {
     auto w = reinterpret_cast<float *>(stream);
 
-    if (cursor < 0 || cursor >= static_cast<int>(size))
-    {
+    if (cursorSec < 0 || cursorSec >= duration())
       isAudioPlaying = false;
+
+    if (!isAudioPlaying)
+    {
       audio->pause(true);
+      restWav.clear();
       return;
     }
 
-    auto dur = std::min(len / static_cast<int>(sizeof(float)), static_cast<int>(size) - cursor);
-    if (dur <= 0)
+    auto dur = len / static_cast<int>(sizeof(float));
+    if (!restWav.empty())
     {
-      isAudioPlaying = false;
-      audio->pause(true);
-      return;
+      auto sz = std::min(static_cast<int>(restWav.size()), dur);
+
+      for (auto i = 0; i < sz; ++i)
+      {
+        *w = restWav[i];
+        ++w;
+      }
+
+      dur -= sz;
+      restWav.erase(restWav.begin(), restWav.begin() + sz);
+      cursorSec += 1. * sz / sampleRate;
     }
 
-    std::copy(data + cursor, data + cursor + dur, w);
-    cursor += dur;
+    while (dur > 0)
+    {
+      const auto sample = time2Sample(cursorSec);
+      const auto pitchBend = time2PitchBend(cursorSec);
+      const auto rate = pow(2, pitchBend / 12);
+      auto it = grains.lower_bound(sample);
+
+      if (it == std::end(grains))
+      {
+        isAudioPlaying = false;
+        return;
+      }
+
+      const auto grain = it->second;
+
+      auto sz = 0;
+      for (auto i = 0; i < dur; ++i)
+      {
+        const auto idx = static_cast<size_t>(cursorSec * sampleRate + i * rate) - static_cast<size_t>(cursorSec * sampleRate);
+        if (idx >= grain.size())
+          break;
+        *w = grain[idx];
+        ++w;
+        ++sz;
+      }
+      cursorSec += 1. * sz / sampleRate;
+      // copy rest to the rest wav
+      restWav.clear();
+      for (auto i = sz;; ++i)
+      {
+        const auto idx = static_cast<size_t>(cursorSec * sampleRate + i * rate) - static_cast<size_t>(cursorSec * sampleRate);
+        if (idx >= grain.size())
+          break;
+        restWav.push_back(grain[idx]);
+      }
+      dur -= sz;
+    }
   });
   spec = std::make_unique<Spec>(std::span<float>{data, data + size});
+  markers.clear();
+  movingMarker = std::end(markers);
 }
 
 auto App::calcPicks() -> void
@@ -208,8 +275,7 @@ auto App::glDraw() -> void
 {
   const auto startFreq = 55. * pow(2., (startNote - 24) / 12.);
 
-  ImGuiIO &io = ImGui::GetIO();
-
+  const auto &io = ImGui::GetIO();
   const auto Height = io.DisplaySize.y;
   const auto Width = io.DisplaySize.x;
 
@@ -233,8 +299,8 @@ auto App::glDraw() -> void
   {
     for (auto x = 0; x < Width; ++x)
     {
-      const auto left = (1. * x / Width * rangeTime + startTime) * sampleRate;
-      const auto right = (1. * (x + 1) / Width * rangeTime + startTime) * sampleRate;
+      const auto left = time2Sample(1. * x / Width * rangeTime + startTime);
+      const auto right = time2Sample(1. * (x + 1) / Width * rangeTime + startTime);
       auto minMax = getMinMaxFromRange(left, right);
       waveformCache.push_back(minMax);
     }
@@ -268,20 +334,21 @@ auto App::glDraw() -> void
 
     glBegin(GL_QUADS);
 
+    auto pitchBend = time2PitchBend(startTime + x * rangeTime / Width);
     auto freq = startFreq / sampleRate * 2.;
     for (auto i = 0; i < rangeNote; ++i)
     {
       glTexCoord1f(freq);
-      glVertex2f(x, 1.f * i / rangeNote);
+      glVertex2f(x, (i + pitchBend) / rangeNote);
 
       glTexCoord1f(freq * step);
-      glVertex2f(x, 1.f * (i + 1) / rangeNote);
+      glVertex2f(x, 1.f * (i + pitchBend + 1.) / rangeNote);
 
       glTexCoord1f(freq * step);
-      glVertex2f(x + 1.f, 1.f * (i + 1) / rangeNote);
+      glVertex2f(x + 1.f, (i + pitchBend + 1.) / rangeNote);
 
       glTexCoord1f(freq);
-      glVertex2f(x + 1.f, 1.f * i / rangeNote);
+      glVertex2f(x + 1.f, (i + pitchBend) / rangeNote);
 
       freq *= step;
     }
@@ -331,10 +398,10 @@ auto App::glDraw() -> void
   glBegin(GL_LINES);
   for (const auto &marker : markers)
   {
-    const auto x0 = (marker.time0 - startTime) * Width / rangeTime;
-    const auto y0 = (marker.note0 - startNote) / rangeNote;
-    const auto x = (marker.time - startTime) * Width / rangeTime;
-    const auto y = (marker.note - startNote) / rangeNote;
+    const auto x0 = (sample2Time(marker.sample) - startTime - marker.dTime) * Width / rangeTime;
+    const auto y0 = (marker.note - startNote) / rangeNote;
+    const auto x = (sample2Time(marker.sample) - startTime) * Width / rangeTime;
+    const auto y = (marker.note - startNote + marker.pitchBend) / rangeNote;
     glColor3f(0.5f, 0.5f, 0.5f);
     glVertex2f(x0, y0);
     glVertex2f(x, y);
@@ -353,10 +420,15 @@ auto App::glDraw() -> void
   glEnd();
 
   // draw a scrubber
+  glViewport(0, 0, (int)io.DisplaySize.x, static_cast<int>(Height - 20));
+  glMatrixMode(GL_PROJECTION);
+  glLoadIdentity();
+  glOrtho(0, Width, 0.f, 1.f, -1, 1);
+
   glColor4f(1.f, 0.f, 0.5f, 0.25f);
   glBegin(GL_LINES);
-  glVertex2f((1. * displayCursor / sampleRate - startTime) / rangeTime * Width, 0.f);
-  glVertex2f((1. * displayCursor / sampleRate - startTime) / rangeTime * Width, 1.f);
+  glVertex2f((1. * displayCursor - startTime) / rangeTime * Width, 0.f);
+  glVertex2f((1. * displayCursor - startTime) / rangeTime * Width, 1.0f);
   glEnd();
 }
 
@@ -472,7 +544,7 @@ auto App::load(const std::string &path) -> void
   avcodec_close(codec);
   avformat_free_context(format);
 
-  LOG("File loaded", path, "duration", 1. * size / sampleRate, "smaple rate", sampleRate);
+  LOG("File loaded", path, "duration", 1. * size / sampleRate, "sample rate", sampleRate);
 }
 
 auto App::mouseMotion(int x, int y, int dx, int dy, uint32_t state) -> void
@@ -480,7 +552,9 @@ auto App::mouseMotion(int x, int y, int dx, int dy, uint32_t state) -> void
   if (size == 0)
     return;
 
-  ImGuiIO &io = ImGui::GetIO();
+  y -= 20;
+
+  const auto &io = ImGui::GetIO();
   const auto Width = io.DisplaySize.x;
   const auto Height = io.DisplaySize.y * .9 - 20;
   if (state & SDL_BUTTON_MMASK)
@@ -521,7 +595,7 @@ auto App::mouseMotion(int x, int y, int dx, int dy, uint32_t state) -> void
       {
         // x motion zoom
         const auto zoom = 1. - 0.001 * dx;
-        const auto cursorPos = 1. * (Height + 20 - y) / Height * rangeNote + startNote;
+        const auto cursorPos = 1. * (Height - y) / Height * rangeNote + startNote;
         const auto newStartNote = (startNote - cursorPos) * zoom + cursorPos;
         const auto newEndNote = (startNote + rangeNote - cursorPos) * zoom + cursorPos;
         startNote = (newStartNote >= 0. && newStartNote <= 127.) ? newStartNote : startNote;
@@ -535,7 +609,6 @@ auto App::mouseMotion(int x, int y, int dx, int dy, uint32_t state) -> void
     }
     else
     {
-
       // panning
       const auto dt = 1. * dx * rangeTime / Width;
       auto newStartTime = startTime - dt;
@@ -553,33 +626,34 @@ auto App::mouseMotion(int x, int y, int dx, int dy, uint32_t state) -> void
   {
     if (movingMarker == std::end(markers))
     {
-      if (!audio)
-        return;
-      audio->lock();
-      cursor = [&]() {
-        const auto tmp = std::clamp(static_cast<int>(x * rangeTime * sampleRate / Width + startTime * sampleRate), 0, static_cast<int>(size - 1));
-        for (auto i = std::clamp(tmp, 0, static_cast<int>(size - 1)); i < std::clamp(tmp + 1000, 0, static_cast<int>(size - 2)); ++i)
-          if (data[i] <= 0 && data[i + 1] >= 0)
-            return i;
-        return tmp;
-      }();
-      audio->unlock();
+      if (y > Height)
+      {
+        if (!audio)
+          return;
+        audio->lock();
+        cursorSec = std::clamp(x * rangeTime / Width + startTime, 0., duration());
+        audio->unlock();
+      }
     }
     else
     {
-      // convert x to time
-      const auto time = x * rangeTime / Width + startTime;
-      // convert y to note
-      const auto note = (Height - (y - 20)) * rangeNote / Height + startNote;
-      movingMarker->time = time;
-      movingMarker->note = note;
+      const auto dX = dx * rangeTime / Width;
+      const auto dY = dy * rangeNote / Height;
+      movingMarker->dTime += dX;
+      movingMarker->pitchBend -= dY;
+      sample2TimeCache.clear();
+      time2SampleCache.clear();
+      time2PitchBendCache.clear();
+      waveformCache.clear();
+      if (specCache)
+        specCache->clear();
     }
   }
 }
 
 auto App::getTex(double start) -> GLuint
 {
-  ImGuiIO &io = ImGui::GetIO();
+  const auto &io = ImGui::GetIO();
   const auto Width = io.DisplaySize.x;
   if (!spec)
   {
@@ -605,89 +679,92 @@ auto App::getTex(double start) -> GLuint
     return nullTexture.get();
   }
   if (!specCache)
-    specCache = std::make_unique<SpecCache>(*spec, k, Width, rangeTime, sampleRate);
+    specCache = std::make_unique<SpecCache>(*spec, k, Width, rangeTime, [this](double val) { return time2Sample(val); });
   return specCache->getTex(start);
 }
 
 auto App::mouseButton(int x, int y, uint32_t state, uint8_t button) -> void
 {
-  // set the cursor on left mouse button
+  y -= 20;
+  const auto &io = ImGui::GetIO();
+  const auto Width = io.DisplaySize.x;
+  const auto Height = io.DisplaySize.y * .9 - 20;
 
+  movingMarker = std::end(markers);
+  std::sort(markers.begin(), markers.end(), [](const auto &a, const auto &b) { return a.sample < b.sample; });
   if (button == SDL_BUTTON_LEFT)
   {
-    if (state == SDL_PRESSED)
+    if (state != SDL_PRESSED)
+      return;
+    if (size < 2)
+      return;
+
+    if (y > Height)
     {
-      if (size < 2)
-        return;
-      ImGuiIO &io = ImGui::GetIO();
-
+      // scrab
       followMode = false;
-
-      const auto Width = io.DisplaySize.x;
-      const auto Height = io.DisplaySize.y * .9 - 20;
-
-      auto it = std::find_if(std::begin(markers), std::end(markers), [&](const auto &m) {
-        const auto xPx = (m.time - startTime) * Width / rangeTime;
-        const auto yPx = -(m.note - startNote) * Height / rangeNote + Height + 20;
-        return std::abs(xPx - x) < 10 && std::abs(yPx - y) < 10;
-      });
-
-      if (it != std::end(markers))
-      {
-        // Start moving the marker
-        movingMarker = it;
-      }
-      else
-      {
-        movingMarker = std::end(markers);
-        if (!audio)
-          return;
-        audio->lock();
-        cursor = [&]() {
-          const auto tmp = std::clamp(static_cast<int>(x * rangeTime * sampleRate / Width + startTime * sampleRate), 0, static_cast<int>(size - 1));
-          for (auto i = std::clamp(tmp, 0, static_cast<int>(size - 1)); i < std::clamp(tmp + 1000, 0, static_cast<int>(size - 2)); ++i)
-            if (data[i] <= 0 && data[i + 1] >= 0)
-              return i;
-          return tmp;
-        }();
-        audio->unlock();
-      }
+      if (!audio)
+        return;
+      audio->lock();
+      cursorSec = std::clamp(x * rangeTime / Width + startTime, 0., duration());
+      audio->unlock();
     }
     else
     {
-      if (movingMarker != std::end(markers))
+      const auto time = x * rangeTime / Width + startTime;
+      const auto sample = time2Sample(time);
+      const auto note = (Height - y) * rangeNote / Height + startNote;
+      const auto dTime = 4 * rangeTime / Width;
+      const auto dNote = 4 * rangeNote / Height;
+
+      auto it = std::find_if(std::begin(markers), std::end(markers), [dNote, dTime, note, this, time](const auto &m) {
+        return std::abs(sample2Time(m.sample) - time + m.dTime) < dTime && std::abs(m.note - note + m.pitchBend) < dNote;
+      });
+      if (it == std::end(markers))
       {
-        // Stop moving the marker
+        // add marker
+        markers.push_back(Marker{sample, note, 0, 0});
+        std::sort(markers.begin(), markers.end(), [](const auto &a, const auto &b) { return a.sample < b.sample; });
+        sample2TimeCache.clear();
+        time2SampleCache.clear();
+        time2PitchBendCache.clear();
+        waveformCache.clear();
+        if (specCache)
+          specCache->clear();
+
         movingMarker = std::end(markers);
+      }
+      else
+      {
+        // move marker
+        LOG("Moving marker", it->sample, "dTime", it->dTime, "pitchBend", it->pitchBend);
+        movingMarker = it;
       }
     }
   }
   else if (button == SDL_BUTTON_RIGHT)
   {
-    if (state == SDL_PRESSED)
+    if (state != SDL_PRESSED)
+      return;
+    // remove marker
+    if (size < 2)
+      return;
+    const auto time = x * rangeTime / Width + startTime;
+    const auto note = (Height - y) * rangeNote / Height + startNote;
+    const auto dTime = 4 * rangeTime / Width;
+    const auto dNote = 4 * rangeNote / Height;
+    auto it = std::find_if(std::begin(markers), std::end(markers), [dNote, dTime, note, this, time](const auto &m) {
+      return std::abs(sample2Time(m.sample) - time + m.dTime) < dTime && std::abs(m.note - note + m.pitchBend) < dNote;
+    });
+    if (it != std::end(markers))
     {
-      if (size < 2)
-        return;
-      ImGuiIO &io = ImGui::GetIO();
-      const auto Width = io.DisplaySize.x;
-      const auto Height = io.DisplaySize.y * .9 - 20;
-      // convert x to time
-      const auto time = x * rangeTime / Width + startTime;
-      // convert y to note
-      const auto note = (Height - (y - 20)) * rangeNote / Height + startNote;
-
-      auto it = std::find_if(std::begin(markers), std::end(markers), [&](const auto &m) {
-        const auto xPx = (m.time - startTime) * Width / rangeTime;
-        const auto yPx = -(m.note - startNote) * Height / rangeNote + Height + 20;
-        return std::abs(xPx - x) < 10 && std::abs(yPx - y) < 10;
-      });
-
-      if (it != std::end(markers))
-        // remove marker
-        markers.erase(it);
-      else
-        // add marker
-        markers.push_back({time, note, time, note});
+      markers.erase(it);
+      sample2TimeCache.clear();
+      time2SampleCache.clear();
+      time2PitchBendCache.clear();
+      waveformCache.clear();
+      if (specCache)
+        specCache->clear();
     }
   }
 }
@@ -696,11 +773,9 @@ auto App::togglePlay() -> void
 {
   if (!audio)
     return;
-  if (isAudioPlaying)
-    audio->pause(true);
-  else
-    audio->pause(false);
   isAudioPlaying = !isAudioPlaying;
+  if (isAudioPlaying)
+    audio->pause(false);
 }
 
 auto App::cursorLeft() -> void
@@ -714,7 +789,7 @@ auto App::cursorLeft() -> void
   if (!audio)
     return;
   audio->lock();
-  cursor = std::clamp(static_cast<int>(cursor - 4 * rangeTime / Width * sampleRate), 0, static_cast<int>(size - 1));
+  cursorSec = std::clamp(cursorSec - 4 * rangeTime / Width, 0., duration());
   audio->unlock();
 }
 
@@ -729,6 +804,106 @@ auto App::cursorRight() -> void
   if (!audio)
     return;
   audio->lock();
-  cursor = std::clamp(static_cast<int>(cursor + 4 * rangeTime / Width * sampleRate), 0, static_cast<int>(size - 1));
+  cursorSec = std::clamp(cursorSec + 4 * rangeTime / Width, 0., duration());
   audio->unlock();
+}
+
+auto App::sample2Time(int val) const -> double
+{
+  // markers are sorted by sample
+
+  if (val <= 0)
+    return 1. * val / sampleRate;
+
+  const auto it = sample2TimeCache.find(val);
+  if (it != std::end(sample2TimeCache))
+    return it->second;
+
+  auto prevSample = 0;
+  auto prevTime = 0.0;
+  for (const auto &marker : markers)
+  {
+    const auto rightTime = prevTime + 1.0 * (marker.sample - prevSample) / sampleRate + marker.dTime;
+    if (val > prevSample && val <= marker.sample)
+    {
+      const auto ret = prevTime + (val - prevSample) * (rightTime - prevTime) / (marker.sample - prevSample);
+      sample2TimeCache[val] = ret;
+      return ret;
+    }
+    prevSample = marker.sample;
+    prevTime = rightTime;
+  }
+
+  const auto ret = prevTime + 1. * (val - prevSample) / sampleRate;
+  sample2TimeCache[val] = ret;
+  return ret;
+}
+
+auto App::time2Sample(double val) const -> int
+{
+  // markers are sorted by sample
+
+  if (val <= 0)
+    return static_cast<int>(val * sampleRate);
+
+  const auto it = time2SampleCache.find(static_cast<int>(val * sampleRate));
+  if (it != std::end(time2SampleCache))
+    return it->second;
+
+  auto prevSample = 0;
+  auto prevTime = 0.0;
+  for (const auto &marker : markers)
+  {
+    const auto rightTime = prevTime + 1.0 * (marker.sample - prevSample) / sampleRate + marker.dTime;
+    if (val > prevTime && val <= rightTime)
+    {
+      const auto ret = prevSample + (val - prevTime) * (marker.sample - prevSample) / (rightTime - prevTime);
+      time2SampleCache[static_cast<int>(val * sampleRate)] = ret;
+      return ret;
+    }
+    prevSample = marker.sample;
+    prevTime = rightTime;
+  }
+
+  const auto ret = prevSample + (val - prevTime) * sampleRate;
+  time2SampleCache[static_cast<int>(val * sampleRate)] = ret;
+  return ret;
+}
+
+auto App::duration() const -> double
+{
+  return sample2Time(size - 1);
+}
+
+auto App::time2PitchBend(double val) const -> double
+{
+  if (val <= 0)
+    return 0;
+  const auto it = time2PitchBendCache.find(static_cast<int>(val * sampleRate));
+  if (it != std::end(time2PitchBendCache))
+    return it->second;
+
+  auto prevSample = 0;
+  auto prevTime = 0.0;
+  auto prevPitchBend = 0.0;
+  for (const auto &marker : markers)
+  {
+    const auto rightTime = prevTime + 1.0 * (marker.sample - prevSample) / sampleRate + marker.dTime;
+    if (val > prevTime && val <= rightTime)
+    {
+      const auto ret = prevPitchBend + (val - prevTime) * (marker.pitchBend - prevPitchBend) / (rightTime - prevTime);
+      time2PitchBendCache[static_cast<int>(val * sampleRate)] = ret;
+      return ret;
+    }
+    prevSample = marker.sample;
+    prevTime = rightTime;
+    prevPitchBend = marker.pitchBend;
+  }
+
+  if (val > duration())
+    return 0;
+
+  const auto ret = prevPitchBend + (val - prevTime) * (0 - prevPitchBend) / (duration() - prevTime);
+  time2PitchBendCache[static_cast<int>(val * sampleRate)] = ret;
+  return ret;
 }

@@ -6,6 +6,7 @@
 #include "spec_cache.hpp"
 #include <imgui/imgui.h>
 #include <list>
+#include <map>
 #include <sdlpp/sdlpp.hpp>
 #include <unordered_map>
 
@@ -30,6 +31,7 @@ public:
 private:
   FileOpen fileOpen;
   float *data = nullptr;
+  std::map<int, std::span<float>> grains;
   size_t size = 0;
   int sampleRate = 0;
   std::vector<std::vector<std::pair<float, float>>> picks;
@@ -38,7 +40,7 @@ private:
   double startNote = 24;
   double rangeNote = 60;
   std::vector<std::pair<float, float>> waveformCache;
-  int cursor = 0;
+  double cursorSec = 0.0;
   bool isAudioPlaying = false;
   bool followMode = false;
 
@@ -51,9 +53,17 @@ private:
   Texture pianoTexture;
   std::vector<Marker> markers;
   std::vector<Marker>::iterator movingMarker;
+  mutable std::unordered_map<int, double> sample2TimeCache;
+  mutable std::unordered_map<int, int> time2SampleCache;
+  mutable std::unordered_map<int, double> time2PitchBendCache;
+  std::vector<float> restWav;
 
   auto calcPicks() -> void;
   auto getMinMaxFromRange(int start, int end) -> std::pair<float, float>;
   auto getTex(double start) -> GLuint;
   auto load(const std::string &) -> void;
+  auto sample2Time(int) const -> double;
+  auto time2Sample(double) const -> int;
+  auto time2PitchBend(double) const -> double;
+  auto duration() const -> double;
 };

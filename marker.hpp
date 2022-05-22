@@ -2,8 +2,8 @@
 
 struct Marker
 {
-  double time0;
-  double note0;
-  double time;
+  int sample;
   double note;
+  double dTime;
+  double pitchBend;
 };

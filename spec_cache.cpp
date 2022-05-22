@@ -2,8 +2,8 @@
 #include <algorithm>
 #include <cmath>
 
-SpecCache::SpecCache(Spec &spec, float k, int screenWidth, double rangeTime, int sampleRate)
-  : spec(spec), k(k), width(screenWidth), rangeTime(rangeTime), sampleRate(sampleRate)
+SpecCache::SpecCache(Spec &spec, float k, int screenWidth, double rangeTime, std::function<int(double)> time2Sample)
+  : spec(spec), k(k), width(screenWidth), rangeTime(rangeTime), time2Sample(std::move(time2Sample))
 {
 }
 
@@ -61,8 +61,8 @@ auto SpecCache::populateTex(GLuint texture, bool &isDirty, int key) -> GLuint
   }
 
   const auto start = key * rangeTime / width;
-  const auto pixelSize = std::max(4. / sampleRate, rangeTime / width);
-  const auto s = spec.get().getSpec(static_cast<int>(start * sampleRate), static_cast<int>((start + pixelSize) * sampleRate));
+  const auto pixelSize = rangeTime / width;
+  const auto s = spec.get().getSpec(time2Sample(start), time2Sample(start + pixelSize));
 
   if (s.empty())
   {
@@ -107,4 +107,10 @@ auto SpecCache::populateTex(GLuint texture, bool &isDirty, int key) -> GLuint
   );
 
   return texture;
+}
+
+auto SpecCache::clear() -> void
+{
+  range2Tex.clear();
+  age.clear();
 }
