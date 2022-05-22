@@ -53,10 +53,12 @@ private:
   Texture pianoTexture;
   std::vector<Marker> markers;
   std::vector<Marker>::iterator movingMarker;
+  double bias = 0.;
   mutable std::unordered_map<int, double> sample2TimeCache;
   mutable std::unordered_map<int, int> time2SampleCache;
   mutable std::unordered_map<int, double> time2PitchBendCache;
   std::vector<float> restWav;
+  float tempo = 130;
 
   auto calcPicks() -> void;
   auto getMinMaxFromRange(int start, int end) -> std::pair<float, float>;
@@ -66,4 +68,5 @@ private:
   auto time2Sample(double) const -> int;
   auto time2PitchBend(double) const -> double;
   auto duration() const -> double;
+  auto estimateGrainSize(int start) const -> int;
 };

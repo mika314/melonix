@@ -54,6 +54,8 @@ auto App::draw() -> void
       k = newK;
       specCache = nullptr;
     }
+    // Tempo
+    ImGui::SliderFloat("Tempo", &tempo, 30.0f, 250.0f);
     const auto &io = ImGui::GetIO();
     ImGui::Text("FPS: %.1f (%.3f ms)", io.Framerate, 1000.0f / io.Framerate);
     ImGui::End();
@@ -79,6 +81,8 @@ auto App::draw() -> void
   }
 }
 
+static auto GrainSpectrSize = 2 * 4096;
+
 auto App::loadFile(const std::string &fileName) -> void
 {
   LOG("open", fileName);
@@ -93,16 +97,49 @@ auto App::loadFile(const std::string &fileName) -> void
   {
     // generate grains
     grains.clear();
-    const auto grainSize = 1000;
     auto start = 0;
-    for (auto i = start + grainSize; i < static_cast<int>(size); ++i)
+    auto grainSize = estimateGrainSize(start);
+    auto nextEstimation = GrainSpectrSize;
+    while (start < static_cast<int>(size - grainSize - 1))
     {
-      const auto isZeroCrossing = data[i - 1] < 0 && data[i] >= 0 && data[i] - data[i - 1] < 1.2E-2f;
-      if (isZeroCrossing && i - start > grainSize)
+      bool found = false;
+      for (auto i = 0; i < grainSize; ++i)
       {
-        grains.insert(std::make_pair(start, std::span<float>(data + start, i - start)));
-        LOG(i - start);
-        start = i;
+        const auto idx = start + grainSize + (i % 2 == 0 ? i / 2 : -i / 2);
+        const auto isZeroCrossing = data[idx] < 0 && data[idx + 1] >= 0;
+        if (isZeroCrossing)
+        {
+          grains.insert(std::make_pair(start, std::span<float>(data + start, idx - start)));
+          LOG("grain", start, idx - start);
+          start = idx;
+          found = true;
+          break;
+        }
+      }
+      if (!found)
+      {
+        LOG("bad grain", start, grainSize);
+        found = false;
+        for (auto i = start + grainSize + grainSize / 2; i < static_cast<int>(size - 1); ++i)
+        {
+          const auto isZeroCrossing = data[i] < 0 && data[i + 1] >= 0;
+          if (isZeroCrossing)
+          {
+            grains.insert(std::make_pair(start, std::span<float>(data + start, i - start)));
+            LOG("grain", start, i - start);
+            start = i;
+            found = true;
+            break;
+          }
+        }
+        if (!found)
+          break;
+      }
+      if (start > nextEstimation)
+      {
+        nextEstimation += GrainSpectrSize;
+        grainSize = estimateGrainSize(start);
+        LOG("estimate", start, grainSize);
       }
     }
   }
@@ -165,7 +202,7 @@ auto App::loadFile(const std::string &fileName) -> void
       auto sz = 0;
       for (auto i = 0; i < dur; ++i)
       {
-        const auto idx = static_cast<size_t>(cursorSec * sampleRate + i * rate) - static_cast<size_t>(cursorSec * sampleRate);
+        const auto idx = static_cast<size_t>(i * rate + bias);
         if (idx >= grain.size())
           break;
         *w = grain[idx];
@@ -177,9 +214,12 @@ auto App::loadFile(const std::string &fileName) -> void
       restWav.clear();
       for (auto i = sz;; ++i)
       {
-        const auto idx = static_cast<size_t>(cursorSec * sampleRate + i * rate) - static_cast<size_t>(cursorSec * sampleRate);
+        const auto idx = static_cast<size_t>(i * rate + bias);
         if (idx >= grain.size())
+        {
+          bias = std::fmod(i * rate + bias, 1.f);
           break;
+        }
         restWav.push_back(grain[idx]);
       }
       dur -= sz;
@@ -394,6 +434,21 @@ auto App::glDraw() -> void
 
   glDisable(GL_TEXTURE_1D);
 
+  // draw bars
+  const auto beatDuration = 60. / tempo;
+  glBegin(GL_LINES);
+  for (auto x = static_cast<int>(startTime / beatDuration); x * beatDuration < startTime + rangeTime; ++x)
+  {
+    if (x % 4 == 0)
+      glColor4f(1.f, 1.f, 1.f, .096f);
+    else
+      glColor4f(1.f, 1.f, 1.f, .04f);
+    const auto pxX = (x * beatDuration - startTime) * Width / rangeTime;
+    glVertex2f(pxX, 0);
+    glVertex2f(pxX, 1);
+  }
+  glEnd();
+
   // draw markers
   glBegin(GL_LINES);
   for (const auto &marker : markers)
@@ -411,7 +466,7 @@ auto App::glDraw() -> void
     glVertex2f(x0 + 2, y0 - 0.0025f);
     glVertex2f(x0 - 2, y0 + 0.0025f);
 
-    glColor3f(1.f, 1.f, 1.f);
+    glColor3f(0.f, 0.5f, 1.f);
     glVertex2f(x - 2, y - 0.0025f);
     glVertex2f(x + 2, y + 0.0025f);
     glVertex2f(x + 2, y - 0.0025f);
@@ -714,16 +769,17 @@ auto App::mouseButton(int x, int y, uint32_t state, uint8_t button) -> void
       const auto time = x * rangeTime / Width + startTime;
       const auto sample = time2Sample(time);
       const auto note = (Height - y) * rangeNote / Height + startNote;
-      const auto dTime = 4 * rangeTime / Width;
-      const auto dNote = 4 * rangeNote / Height;
+      const auto dTime = 8 * rangeTime / Width;
+      const auto dNote = 8 * rangeNote / Height;
 
       auto it = std::find_if(std::begin(markers), std::end(markers), [dNote, dTime, note, this, time](const auto &m) {
-        return std::abs(sample2Time(m.sample) - time + m.dTime) < dTime && std::abs(m.note - note + m.pitchBend) < dNote;
+        return std::abs(sample2Time(m.sample) - time) < dTime && std::abs(m.note - note + m.pitchBend) < dNote;
       });
       if (it == std::end(markers))
       {
         // add marker
-        markers.push_back(Marker{sample, note, 0, 0});
+        const auto pitchBend = time2PitchBend(time);
+        markers.push_back(Marker{sample, note - pitchBend, 0., pitchBend});
         std::sort(markers.begin(), markers.end(), [](const auto &a, const auto &b) { return a.sample < b.sample; });
         sample2TimeCache.clear();
         time2SampleCache.clear();
@@ -751,10 +807,10 @@ auto App::mouseButton(int x, int y, uint32_t state, uint8_t button) -> void
       return;
     const auto time = x * rangeTime / Width + startTime;
     const auto note = (Height - y) * rangeNote / Height + startNote;
-    const auto dTime = 4 * rangeTime / Width;
-    const auto dNote = 4 * rangeNote / Height;
+    const auto dTime = 8 * rangeTime / Width;
+    const auto dNote = 8 * rangeNote / Height;
     auto it = std::find_if(std::begin(markers), std::end(markers), [dNote, dTime, note, this, time](const auto &m) {
-      return std::abs(sample2Time(m.sample) - time + m.dTime) < dTime && std::abs(m.note - note + m.pitchBend) < dNote;
+      return std::abs(sample2Time(m.sample) - time) < dTime && std::abs(m.note - note + m.pitchBend) < dNote;
     });
     if (it != std::end(markers))
     {
@@ -906,4 +962,68 @@ auto App::time2PitchBend(double val) const -> double
   const auto ret = prevPitchBend + (val - prevTime) * (0 - prevPitchBend) / (duration() - prevTime);
   time2PitchBendCache[static_cast<int>(val * sampleRate)] = ret;
   return ret;
+}
+
+namespace
+{
+  class GrainSpec
+  {
+  public:
+    GrainSpec() : input(fftw_alloc_complex(GrainSpectrSize)), output(fftw_alloc_complex(GrainSpectrSize))
+    {
+      memset(input, 0, sizeof(fftw_complex) * GrainSpectrSize);
+      memset(output, 0, sizeof(fftw_complex) * GrainSpectrSize);
+      plan = fftw_plan_dft_1d(GrainSpectrSize, input, output, FFTW_FORWARD, FFTW_MEASURE);
+    }
+
+    ~GrainSpec()
+    {
+      fftw_destroy_plan(plan);
+      fftw_free(input);
+      fftw_free(output);
+    }
+
+    fftw_plan plan;
+    fftw_complex *input;
+    fftw_complex *output;
+  };
+} // namespace
+
+auto App::estimateGrainSize(int start) const -> int
+{
+  static GrainSpec spec;
+  for (auto i = 0; i < GrainSpectrSize; ++i)
+  {
+    spec.input[i][0] = data[std::min(start + i, static_cast<int>(size - 1))];
+    spec.input[i][1] = 0;
+  }
+  fftw_execute(spec.plan);
+  // find max value and index
+  double max = 0;
+  int maxIndex = 20 * GrainSpectrSize / sampleRate;
+  for (auto i = maxIndex; i < GrainSpectrSize / 2 / 4; ++i)
+  {
+    const auto val = std::abs(spec.output[i][0]) + std::abs(spec.output[i][1]);
+    if (val > max)
+    {
+      max = val;
+      maxIndex = i;
+    }
+  }
+  maxIndex = maxIndex * 4 - maxIndex / 4;
+  max = 0;
+  for (auto i = maxIndex; i < GrainSpectrSize / 2; ++i)
+  {
+    const auto val = std::abs(spec.output[i][0]) + std::abs(spec.output[i][1]);
+    if (val > max)
+    {
+      max = val;
+      maxIndex = i;
+    }
+  }
+
+  const auto maxFreq = std::max(1., 1. * maxIndex * sampleRate / GrainSpectrSize / 4.);
+  LOG("freq", maxFreq);
+
+  return std::ceil(1500. * maxFreq / sampleRate) * sampleRate / maxFreq;
 }
