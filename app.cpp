@@ -12,6 +12,8 @@ extern "C" {
 #include <libswresample/swresample.h>
 }
 
+static const auto preferredGrainSize = 1500;
+
 auto App::draw() -> void
 {
   std::function<void(void)> postponedAction = nullptr;
@@ -176,113 +178,132 @@ auto App::loadFile(const std::string &fileName) -> void
     return want;
   }();
   SDL_AudioSpec have;
-  audio = std::make_unique<sdl::Audio>(nullptr, false, &want, &have, 0, [&](Uint8 *stream, int len) {
-    auto w = reinterpret_cast<float *>(stream);
+  audio = std::make_unique<sdl::Audio>(
+    nullptr, false, &want, &have, 0, [&](Uint8 *stream, int len) { playback(reinterpret_cast<float *>(stream), len / sizeof(float)); });
 
-    if (cursorSec < 0 || cursorSec >= duration())
-      isAudioPlaying = false;
-
-    auto dur = static_cast<int>(len / sizeof(float));
-    if (!restWav.empty())
-    {
-      auto sz = std::min(static_cast<int>(restWav.size()), dur);
-
-      for (auto i = 0; i < sz; ++i)
-      {
-        *w = restWav[i];
-        ++w;
-      }
-
-      dur -= sz;
-      restWav.erase(restWav.begin(), restWav.begin() + sz);
-      cursorSec += 1. * sz / sampleRate;
-    }
-
-    if (!isAudioPlaying)
-    {
-      audio->pause(true);
-      for (; dur > 0; --dur, ++w)
-        *w = 0;
-      for (int i = 0; i < 100; ++i)
-      {
-        *w *= .01 * i;
-        --w;
-      }
-      restWav.clear();
-
-      return;
-    }
-
-    while (dur > 0)
-    {
-      const auto sample = time2Sample(cursorSec);
-      const auto pitchBend = time2PitchBend(cursorSec);
-      const auto rate = pow(2, pitchBend / 12);
-      auto it = grains.lower_bound(sample);
-
-      if (it == std::end(grains))
-      {
-        isAudioPlaying = false;
-        return;
-      }
-
-      const auto grain = std::get<0>(it->second);
-      const auto nextGrainFirstSample = [&]() {
-        auto sz = 0;
-        for (auto i = 0; i < dur; ++i)
-        {
-          auto idxF = double{};
-          std::modf(i * rate + bias, &idxF);
-          const auto idx = static_cast<size_t>(idxF);
-          if (idx >= grain.size())
-            break;
-          ++sz;
-        };
-        const auto sample = time2Sample(cursorSec + 1. * sz / sampleRate);
-        auto it = grains.lower_bound(sample);
-        if (it == std::end(grains))
-          return 0.f;
-
-        return std::get<0>(it->second).front();
-      }();
-      const auto diff = &grain[0] - &prevGrain[prevGrain.size()];
-      if (diff != 0)
-        LOG(diff, grain.size(), std::get<1>(it->second), bias);
-      prevGrain = grain;
-
-      auto sz = 0;
-      for (auto i = 0; i < dur; ++i)
-      {
-        auto idxF = double{};
-        const auto curBias = std::modf(i * rate + bias, &idxF);
-        const auto idx = static_cast<size_t>(idxF);
-        if (idx >= grain.size())
-          break;
-        *w = (1. - curBias) * grain[idx] + curBias * (idx + 1 < grain.size() ? grain[idx + 1] : nextGrainFirstSample);
-        ++w;
-        ++sz;
-      }
-      cursorSec += 1. * sz / sampleRate;
-      // copy rest to the rest wav
-      restWav.clear();
-      for (auto i = sz;; ++i)
-      {
-        auto idxF = double{};
-        const auto curBias = std::modf(i * rate + bias, &idxF);
-        const auto idx = static_cast<size_t>(idxF);
-        if (idx >= grain.size())
-        {
-          bias = curBias;
-          break;
-        }
-        restWav.push_back((1. - curBias) * grain[idx] + curBias * (idx + 1 < grain.size() ? grain[idx + 1] : nextGrainFirstSample));
-      }
-      dur -= sz;
-    }
-  });
   spec = std::make_unique<Spec>(std::span<float>{data, data + size});
   markers.clear();
   selectedMarker = std::end(markers);
+}
+
+auto App::playback(float *w, size_t dur) -> void
+{
+  if (cursorSec < 0 || cursorSec >= duration())
+    isAudioPlaying = false;
+
+  if (!isAudioPlaying)
+  {
+    audio->pause(true);
+    for (; dur > 0; --dur, ++w)
+      *w = 0;
+    for (int i = 0; i < 100; ++i)
+    {
+      *w *= .01 * i;
+      --w;
+    }
+    restWav.clear();
+
+    return;
+  }
+
+  auto tmpCursor = cursorSec;
+  const auto sampleOffset = restWav.size();
+
+  while (restWav.size() < dur + preferredGrainSize)
+  {
+    const auto sample = time2Sample(tmpCursor) + sampleOffset;
+    const auto pitchBend = time2PitchBend(tmpCursor);
+    const auto rate = pow(2, pitchBend / 12);
+    auto it = grains.lower_bound(sample);
+
+    if (it == std::end(grains))
+    {
+      isAudioPlaying = false;
+      return;
+    }
+
+    const auto grain = std::get<0>(it->second);
+    const auto nextGrainFirstSample = [&]() {
+      auto sz = 0;
+      for (auto i = 0;; ++i)
+      {
+        auto idxF = double{};
+        std::modf(i * rate + bias, &idxF);
+        const auto idx = static_cast<size_t>(idxF);
+        if (idx >= grain.size())
+          break;
+        ++sz;
+      };
+      const auto sample = time2Sample(tmpCursor + 1. * sz / sampleRate);
+      auto it = grains.lower_bound(sample);
+      if (it == std::end(grains))
+        return 0.f;
+
+      return std::get<0>(it->second).front();
+    }();
+    const auto diff = &grain[0] - &prevGrain[prevGrain.size()];
+    prevGrain = grain;
+
+    auto sz = 0;
+    if (diff == 0)
+    {
+      for (auto i = 0;; ++i)
+      {
+        auto idxF = double{};
+        const auto curBias = std::modf(i * rate + bias, &idxF);
+        const auto idx = static_cast<size_t>(idxF);
+        if (idx >= grain.size())
+          break;
+        restWav.push_back((1. - curBias) * grain[idx] + curBias * (idx + 1 < grain.size() ? grain[idx + 1] : nextGrainFirstSample));
+        ++sz;
+      }
+    }
+    else
+    {
+      const auto grainPart = static_cast<size_t>(grain.size() / rate * 3 / 4);
+      auto wavIdx = restWav.size() > grainPart ? restWav.size() - grainPart : 0U;
+      LOG("wav size", restWav.size(), "grain.size", grain.size(), "grainPart", grainPart, "wavIdx", wavIdx);
+      for (auto i = 0;; ++i)
+      {
+        auto idxF = double{};
+        const auto curBias = std::modf(i * rate + bias, &idxF);
+        const auto idx = static_cast<size_t>(idxF);
+        if (idx >= grain.size())
+          break;
+        const auto v = (1. - curBias) * grain[idx] + curBias * (idx + 1 < grain.size() ? grain[idx + 1] : nextGrainFirstSample);
+        if (wavIdx >= restWav.size())
+        {
+          restWav.resize(wavIdx + 1);
+          ++sz;
+        }
+
+        if (idx > grain.size() * 3 / 4)
+          restWav[wavIdx] = v;
+        else
+        {
+          const auto k = 1.f * idx / (grain.size() * 3 / 4);
+          restWav[wavIdx] = (1.f - k) * restWav[wavIdx] + k * v;
+        }
+        ++wavIdx;
+      }
+    }
+    tmpCursor += 1. * sz / sampleRate;
+  }
+
+  if (!restWav.empty())
+  {
+    auto sz = std::min(restWav.size(), dur);
+
+    for (auto i = 0U; i < sz; ++i)
+    {
+      *w = restWav[i];
+      ++w;
+    }
+
+    dur -= sz;
+    restWav.erase(restWav.begin(), restWav.begin() + sz);
+    cursorSec += 1. * sz / sampleRate;
+  }
 }
 
 auto App::calcPicks() -> void
@@ -1078,5 +1099,5 @@ auto App::estimateGrainSize(int start) const -> int
   const auto maxFreq = std::max(1., 1. * maxIndex * sampleRate / GrainSpectrSize / 4.);
   LOG("freq", maxFreq);
 
-  return std::ceil(1500. * maxFreq / sampleRate) * sampleRate / maxFreq;
+  return std::ceil(1. * preferredGrainSize * maxFreq / sampleRate) * sampleRate / maxFreq;
 }

@@ -69,7 +69,7 @@ private:
   auto getTex(double start) -> GLuint;
   auto invalidateCache() const -> void;
   auto load(const std::string &) -> void;
-  auto playback(std::span<float> wav) -> void;
+  auto playback(float *, size_t) -> void;
   auto sample2Time(int) const -> double;
   auto time2PitchBend(double) const -> double;
   auto time2Sample(double) const -> int;
