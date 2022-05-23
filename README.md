@@ -1,3 +1,6 @@
 # melonix
-[WIP] Pitch correction application written using ImGui and OpenGL 3
-![image](https://user-images.githubusercontent.com/1877406/168794528-907b7f0d-cee9-479f-afba-a21017eab736.png)
+
+
+[![How hard is it to make melodyne?](https://user-images.githubusercontent.com/1877406/169781760-fb738b6f-0ae8-414f-ad4f-8d48a7e5f5ac.png)](https://youtu.be/qwAjW5hI148 "How hard is it to make melodyne?")
+
+
