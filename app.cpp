@@ -260,7 +260,8 @@ auto App::playback(float *w, size_t dur) -> void
     }
     else
     {
-      const auto grainPart = static_cast<size_t>(grain.size() / rate * 3 / 4);
+      const auto overlap = (rand() % 200 + 700) / 1000.;
+      const auto grainPart = static_cast<size_t>(grain.size() / rate * overlap);
       auto wavIdx = restWav.size() > grainPart ? restWav.size() - grainPart : 0U;
       LOG("wav size", restWav.size(), "grain.size", grain.size(), "grainPart", grainPart, "wavIdx", wavIdx);
       for (auto i = 0;; ++i)
@@ -277,12 +278,12 @@ auto App::playback(float *w, size_t dur) -> void
           ++sz;
         }
 
-        if (idx > grain.size() * 3 / 4)
+        if (idx > grain.size() * overlap)
           restWav[wavIdx] = v;
         else
         {
-          const auto k = 1.f * idx / (grain.size() * 3 / 4);
-          restWav[wavIdx] = (1.f - k) * restWav[wavIdx] + k * v;
+          const auto k = 1.f * idx / (grain.size() * overlap);
+          restWav[wavIdx] = sin((1.f - k) * 3.1415926 / 2) * restWav[wavIdx] + sin(k * 3.1415926 / 2) * v;
         }
         ++wavIdx;
       }
@@ -413,10 +414,12 @@ auto App::glDraw() -> void
   {
     for (auto x = 0; x < Width; ++x)
     {
+      audio->lock();
       const auto left = time2Sample(1. * x / Width * rangeTime + startTime);
       const auto right = time2Sample(1. * (x + 1) / Width * rangeTime + startTime);
       auto minMax = getMinMaxFromRange(left, right);
       waveformCache.push_back(minMax);
+      audio->unlock();
     }
   }
 
@@ -448,7 +451,9 @@ auto App::glDraw() -> void
 
     glBegin(GL_QUADS);
 
+    audio->lock();
     const auto pitchBend = time2PitchBend(startTime + x * rangeTime / Width);
+    audio->unlock();
     const auto startFreq = 55. * pow(2., (startNote - 24) / 12.);
     auto freq = startFreq / sampleRate * 2.;
     for (auto i = 0; i < rangeNote; ++i)
@@ -831,7 +836,9 @@ auto App::mouseButton(int x, int y, uint32_t state, uint8_t button) -> void
   const auto Width = io.DisplaySize.x;
   const auto Height = io.DisplaySize.y * .9 - 20;
 
+  audio->lock();
   std::sort(markers.begin(), markers.end(), [](const auto &a, const auto &b) { return a.sample < b.sample; });
+  audio->unlock();
   if (button == SDL_BUTTON_LEFT)
   {
     if (state != SDL_PRESSED)
@@ -852,7 +859,9 @@ auto App::mouseButton(int x, int y, uint32_t state, uint8_t button) -> void
     else
     {
       const auto time = x * rangeTime / Width + startTime;
+      audio->lock();
       const auto sample = time2Sample(time);
+      audio->unlock();
       const auto note = (Height - y) * rangeNote / Height + startNote;
       const auto dTime = 8 * rangeTime / Width;
       const auto dNote = 8 * rangeNote / Height;
@@ -863,10 +872,12 @@ auto App::mouseButton(int x, int y, uint32_t state, uint8_t button) -> void
       if (it == std::end(markers))
       {
         // add marker
+        audio->lock();
         const auto pitchBend = time2PitchBend(time);
         markers.push_back(Marker{sample, note - pitchBend, 0., pitchBend});
         std::sort(markers.begin(), markers.end(), [](const auto &a, const auto &b) { return a.sample < b.sample; });
         invalidateCache();
+        audio->unlock();
         selectedMarker = std::find_if(std::begin(markers), std::end(markers), [sample](const auto &m) { return m.sample == sample; });
       }
       else
@@ -893,9 +904,11 @@ auto App::mouseButton(int x, int y, uint32_t state, uint8_t button) -> void
     });
     if (it != std::end(markers))
     {
+      audio->lock();
       markers.erase(it);
       selectedMarker = std::end(markers);
       invalidateCache();
+      audio->unlock();
     }
   }
 }
