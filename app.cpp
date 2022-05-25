@@ -12,8 +12,6 @@ extern "C" {
 #include <libswresample/swresample.h>
 }
 
-static const auto preferredGrainSize = 1500;
-
 auto App::draw() -> void
 {
   std::function<void(void)> postponedAction = nullptr;
@@ -41,7 +39,7 @@ auto App::draw() -> void
 
   {
     ImGui::Begin("Control Center");
-    ImGui::Text("<%.2f %.2f %.2f>", startTime, cursorSec, startTime + rangeTime);
+    ImGui::Text("<%.2f %.2f %.2f>", startTime, sample2Time(cursorSamples), startTime + rangeTime);
     ImGui::SameLine();
     ImGui::Text("<%.2f %.2f>", startNote, startNote + rangeNote);
     ImGui::Checkbox("Follow", &followMode);
@@ -87,7 +85,7 @@ auto App::draw() -> void
   if (audio)
   {
     audio->lock();
-    displayCursor = cursorSec;
+    displayCursor = sample2Time(cursorSamples);
     audio->unlock();
     if (displayCursor > startTime + rangeTime && isAudioPlaying)
       followMode = true;
@@ -105,8 +103,6 @@ auto App::draw() -> void
   }
 }
 
-static auto GrainSpectrSize = 2 * 4096;
-
 auto App::loadFile(const std::string &fileName) -> void
 {
   LOG("open", fileName);
@@ -115,60 +111,15 @@ auto App::loadFile(const std::string &fileName) -> void
   audio = nullptr;
   startTime = 0.;
   rangeTime = 10.;
-  cursorSec = 0;
+  cursorSamples = 0;
   load(fileName);
 
-  {
-    // generate grains
-    grains.clear();
-    auto start = 0;
-    auto grainSize = estimateGrainSize(start);
-    auto nextEstimation = GrainSpectrSize;
-    while (start < static_cast<int>(size - grainSize - 1))
-    {
-      bool found = false;
-      for (auto i = 0; i < grainSize; ++i)
-      {
-        const auto idx = start + grainSize + (i % 2 == 0 ? i / 2 : -i / 2);
-        const auto isZeroCrossing = data[idx] < 0 && data[idx + 1] >= 0;
-        if (isZeroCrossing)
-        {
-          grains.insert(std::make_pair(start, std::make_tuple(std::span<float>(data + start, idx - start), idx - start - grainSize)));
-          LOG("grain", start, idx - start);
-          start = idx;
-          found = true;
-          break;
-        }
-      }
-      if (!found)
-      {
-        LOG("bad grain", start, grainSize);
-        found = false;
-        for (auto i = start + grainSize + grainSize / 2; i < static_cast<int>(size - 1); ++i)
-        {
-          const auto isZeroCrossing = data[i] < 0 && data[i + 1] >= 0;
-          if (isZeroCrossing)
-          {
-            grains.insert(std::make_pair(start, std::make_tuple(std::span<float>(data + start, i - start), i - start - grainSize)));
-            LOG("grain", start, i - start);
-            start = i;
-            found = true;
-            break;
-          }
-        }
-        if (!found)
-          break;
-      }
-      if (start > nextEstimation)
-      {
-        nextEstimation += GrainSpectrSize;
-        grainSize = estimateGrainSize(start);
-        LOG("estimate", start, grainSize);
-      }
-    }
-  }
-
   calcPicks();
+  stretcher = std::make_unique<RubberBand::RubberBandStretcher>(sampleRate,
+                                                                1,
+                                                                RubberBand::RubberBandStretcher::OptionProcessRealTime |
+                                                                  RubberBand::RubberBandStretcher::OptionPitchHighQuality |
+                                                                  RubberBand::RubberBandStretcher::OptionWindowLong);
   auto want = [&]() {
     SDL_AudioSpec want;
     want.freq = sampleRate;
@@ -188,122 +139,34 @@ auto App::loadFile(const std::string &fileName) -> void
 
 auto App::playback(float *w, size_t dur) -> void
 {
-  if (cursorSec < 0 || cursorSec >= duration())
+  if (cursorSamples < 0 || cursorSamples >= size)
     isAudioPlaying = false;
 
   if (!isAudioPlaying)
   {
+    stretcher->reset();
     audio->pause(true);
-    for (; dur > 0; --dur, ++w)
-      *w = 0;
-    for (int i = 0; i < 100; ++i)
-    {
-      *w *= .01 * i;
-      --w;
-    }
-    restWav.clear();
-
     return;
   }
 
-  auto tmpCursor = cursorSec;
-  const auto sampleOffset = restWav.size();
-
-  while (restWav.size() < dur + preferredGrainSize)
+  while (stretcher->available() < static_cast<int>(dur))
   {
-    const auto sample = time2Sample(tmpCursor) + sampleOffset;
-    const auto pitchBend = time2PitchBend(tmpCursor);
-    const auto rate = pow(2, pitchBend / 12);
-    auto it = grains.lower_bound(sample);
-
-    if (it == std::end(grains))
+    const auto cursorSec = sample2Time(cursorSamples);
+    const auto timeRatio = 1. * (time2Sample(cursorSec + 1. * dur / sampleRate) - cursorSamples) / dur;
+    stretcher->setTimeRatio(timeRatio);
+    stretcher->setPitchScale(pow(2., time2PitchBend(cursorSec) / 12.));
+    const auto samples =
+      std::min(std::max(static_cast<int>((dur - stretcher->available()) / timeRatio), 256), static_cast<int>(size - cursorSamples));
+    if (samples <= 0)
     {
       isAudioPlaying = false;
       return;
     }
-
-    const auto grain = std::get<0>(it->second);
-    const auto nextGrainFirstSample = [&]() {
-      auto sz = 0;
-      for (auto i = 0;; ++i)
-      {
-        auto idxF = double{};
-        std::modf(i * rate + bias, &idxF);
-        const auto idx = static_cast<size_t>(idxF);
-        if (idx >= grain.size())
-          break;
-        ++sz;
-      };
-      const auto sample = time2Sample(tmpCursor + 1. * sz / sampleRate);
-      auto it = grains.lower_bound(sample);
-      if (it == std::end(grains))
-        return 0.f;
-
-      return std::get<0>(it->second).front();
-    }();
-    const auto diff = &grain[0] - &prevGrain[prevGrain.size()];
-    prevGrain = grain;
-
-    auto sz = 0;
-    if (diff == 0)
-    {
-      for (auto i = 0;; ++i)
-      {
-        auto idxF = double{};
-        const auto curBias = std::modf(i * rate + bias, &idxF);
-        const auto idx = static_cast<size_t>(idxF);
-        if (idx >= grain.size())
-          break;
-        restWav.push_back((1. - curBias) * grain[idx] + curBias * (idx + 1 < grain.size() ? grain[idx + 1] : nextGrainFirstSample));
-        ++sz;
-      }
-    }
-    else
-    {
-      const auto grainPart = static_cast<size_t>(grain.size() / rate * 3 / 4);
-      auto wavIdx = restWav.size() > grainPart ? restWav.size() - grainPart : 0U;
-      LOG("wav size", restWav.size(), "grain.size", grain.size(), "grainPart", grainPart, "wavIdx", wavIdx);
-      for (auto i = 0;; ++i)
-      {
-        auto idxF = double{};
-        const auto curBias = std::modf(i * rate + bias, &idxF);
-        const auto idx = static_cast<size_t>(idxF);
-        if (idx >= grain.size())
-          break;
-        const auto v = (1. - curBias) * grain[idx] + curBias * (idx + 1 < grain.size() ? grain[idx + 1] : nextGrainFirstSample);
-        if (wavIdx >= restWav.size())
-        {
-          restWav.resize(wavIdx + 1);
-          ++sz;
-        }
-
-        if (idx > grain.size() * 3 / 4)
-          restWav[wavIdx] = v;
-        else
-        {
-          const auto k = 1.f * idx / (grain.size() * 3 / 4);
-          restWav[wavIdx] = (1.f - k) * restWav[wavIdx] + k * v;
-        }
-        ++wavIdx;
-      }
-    }
-    tmpCursor += 1. * sz / sampleRate;
+    const auto arr = data + cursorSamples;
+    stretcher->process(&arr, samples, false);
+    cursorSamples += samples;
   }
-
-  if (!restWav.empty())
-  {
-    auto sz = std::min(restWav.size(), dur);
-
-    for (auto i = 0U; i < sz; ++i)
-    {
-      *w = restWav[i];
-      ++w;
-    }
-
-    dur -= sz;
-    restWav.erase(restWav.begin(), restWav.begin() + sz);
-    cursorSec += 1. * sz / sampleRate;
-  }
+  stretcher->retrieve(&w, std::min(static_cast<int>(dur), stretcher->available()));
 }
 
 auto App::calcPicks() -> void
@@ -768,7 +631,8 @@ auto App::mouseMotion(int x, int y, int dx, int dy, uint32_t state) -> void
       if (!audio)
         return;
       audio->lock();
-      cursorSec = std::clamp(x * rangeTime / Width + startTime, 0., duration());
+      const auto cursorSec = x * rangeTime / Width + startTime;
+      cursorSamples = std::clamp(time2Sample(cursorSec), 0, static_cast<int>(size));
       audio->unlock();
     }
     else if (selectedMarker != std::end(markers))
@@ -845,8 +709,9 @@ auto App::mouseButton(int x, int y, uint32_t state, uint8_t button) -> void
       followMode = false;
       if (!audio)
         return;
+      const auto cursorSec = x * rangeTime / Width + startTime;
       audio->lock();
-      cursorSec = std::clamp(x * rangeTime / Width + startTime, 0., duration());
+      cursorSamples = std::clamp(time2Sample(cursorSec), 0, static_cast<int>(size));
       audio->unlock();
     }
     else
@@ -920,7 +785,7 @@ auto App::cursorLeft() -> void
   if (!audio)
     return;
   audio->lock();
-  cursorSec = std::clamp(cursorSec - 4 * rangeTime / Width, 0., duration());
+  cursorSamples = std::clamp(static_cast<int>(cursorSamples - 4 * rangeTime * sampleRate / Width), 0, static_cast<int>(size));
   audio->unlock();
 }
 
@@ -934,7 +799,7 @@ auto App::cursorRight() -> void
   if (!audio)
     return;
   audio->lock();
-  cursorSec = std::clamp(cursorSec + 4 * rangeTime / Width, 0., duration());
+  cursorSamples = std::clamp(static_cast<int>(cursorSamples + 4 * rangeTime * sampleRate / Width), 0, static_cast<int>(size));
   audio->unlock();
 }
 
@@ -1036,68 +901,4 @@ auto App::time2PitchBend(double val) const -> double
   const auto ret = prevPitchBend + (val - prevTime) * (0 - prevPitchBend) / (duration() - prevTime);
   time2PitchBendCache[static_cast<int>(val * sampleRate)] = ret;
   return ret;
-}
-
-namespace
-{
-  class GrainSpec
-  {
-  public:
-    GrainSpec() : input(fftw_alloc_complex(GrainSpectrSize)), output(fftw_alloc_complex(GrainSpectrSize))
-    {
-      memset(input, 0, sizeof(fftw_complex) * GrainSpectrSize);
-      memset(output, 0, sizeof(fftw_complex) * GrainSpectrSize);
-      plan = fftw_plan_dft_1d(GrainSpectrSize, input, output, FFTW_FORWARD, FFTW_MEASURE);
-    }
-
-    ~GrainSpec()
-    {
-      fftw_destroy_plan(plan);
-      fftw_free(input);
-      fftw_free(output);
-    }
-
-    fftw_plan plan;
-    fftw_complex *input;
-    fftw_complex *output;
-  };
-} // namespace
-
-auto App::estimateGrainSize(int start) const -> int
-{
-  static GrainSpec spec;
-  for (auto i = 0; i < GrainSpectrSize; ++i)
-  {
-    spec.input[i][0] = data[std::min(start + i, static_cast<int>(size - 1))];
-    spec.input[i][1] = 0;
-  }
-  fftw_execute(spec.plan);
-  // find max value and index
-  double max = 0;
-  int maxIndex = 20 * GrainSpectrSize / sampleRate;
-  for (auto i = maxIndex; i < GrainSpectrSize / 2 / 4; ++i)
-  {
-    const auto val = std::abs(spec.output[i][0]) + std::abs(spec.output[i][1]);
-    if (val > max)
-    {
-      max = val;
-      maxIndex = i;
-    }
-  }
-  maxIndex = maxIndex * 4 - maxIndex / 4;
-  max = 0;
-  for (auto i = maxIndex; i < GrainSpectrSize / 2; ++i)
-  {
-    const auto val = std::abs(spec.output[i][0]) + std::abs(spec.output[i][1]);
-    if (val > max)
-    {
-      max = val;
-      maxIndex = i;
-    }
-  }
-
-  const auto maxFreq = std::max(1., 1. * maxIndex * sampleRate / GrainSpectrSize / 4.);
-  LOG("freq", maxFreq);
-
-  return std::ceil(1. * preferredGrainSize * maxFreq / sampleRate) * sampleRate / maxFreq;
 }

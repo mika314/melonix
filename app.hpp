@@ -7,6 +7,7 @@
 #include <imgui/imgui.h>
 #include <list>
 #include <map>
+#include <rubberband/RubberBandStretcher.h>
 #include <sdlpp/sdlpp.hpp>
 #include <unordered_map>
 
@@ -31,7 +32,6 @@ public:
 private:
   FileOpen fileOpen;
   float *data = nullptr;
-  std::map<int, std::tuple<std::span<float>, int>> grains;
   size_t size = 0;
   int sampleRate = 0;
   std::vector<std::vector<std::pair<float, float>>> picks;
@@ -40,7 +40,7 @@ private:
   double startNote = 24;
   double rangeNote = 60;
   mutable std::vector<std::pair<float, float>> waveformCache;
-  double cursorSec = 0.0;
+  size_t cursorSamples = 0;
   bool isAudioPlaying = false;
   bool followMode = false;
 
@@ -53,18 +53,15 @@ private:
   Texture pianoTexture;
   std::vector<Marker> markers;
   std::vector<Marker>::iterator selectedMarker;
-  double bias = 0.;
   mutable std::unordered_map<int, double> sample2TimeCache;
   mutable std::unordered_map<int, int> time2SampleCache;
   mutable std::unordered_map<int, double> time2PitchBendCache;
-  std::vector<float> restWav;
   float tempo = 130;
-  std::span<float> prevGrain;
+  std::unique_ptr<RubberBand::RubberBandStretcher> stretcher;
 
   auto calcPicks() -> void;
   auto drawMarkers() -> void;
   auto duration() const -> double;
-  auto estimateGrainSize(int start) const -> int;
   auto getMinMaxFromRange(int start, int end) -> std::pair<float, float>;
   auto getTex(double start) -> GLuint;
   auto invalidateCache() const -> void;
