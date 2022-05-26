@@ -1140,6 +1140,8 @@ auto App::estimateGrainSize(int start) const -> int
 
 auto App::loadMelonixFile(const std::string &fileName) -> void
 {
+  LOG("loadMelonixFile", fileName);
+
   cleanup();
 
   // load file into memory
@@ -1172,11 +1174,13 @@ auto App::cleanup() -> void
 
 auto App::saveMelonixFile(std::string fileName) -> void
 {
-  auto ext = std::filesystem::path(fileName).extension().string();
-  if (ext != "melonix")
+  const auto ext = std::filesystem::path(fileName).extension().string();
+  if (ext != ".melonix")
     fileName += ".melonix";
 
   saveName = fileName;
+
+  LOG("saveMelonixFile", fileName);
 
   OStrm st;
   ::ser(st, *this);
