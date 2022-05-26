@@ -2,8 +2,11 @@
 #include <SDL.h>
 #include <algorithm>
 #include <cmath>
+#include <fstream>
 #include <functional>
 #include <log/log.hpp>
+#include <ser/istrm.hpp>
+#include <ser/ser.hpp>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -23,11 +26,16 @@ auto App::draw() -> void
     if (ImGui::BeginMenu("File"))
     {
       if (ImGui::MenuItem("Open"))
-      {
-        LOG("Open");
         postponedAction = [&]() { ImGui::OpenPopup("FileOpen"); };
+      if (ImGui::MenuItem("Save"))
+      {
+        if (!saveName.empty())
+          saveMelonixFile(saveName);
+        else
+          postponedAction = [&]() { ImGui::OpenPopup("FileSaveAs"); };
       }
-      if (ImGui::MenuItem("Save")) {}
+      if (ImGui::MenuItem("Save As"))
+        postponedAction = [&]() { ImGui::OpenPopup("FileSaveAs"); };
       if (ImGui::MenuItem("Quit")) {}
       ImGui::EndMenu();
     }
@@ -37,7 +45,10 @@ auto App::draw() -> void
     postponedAction();
 
   if (fileOpen.draw())
-    loadFile(fileOpen.getSelectedFile());
+    openFile(fileOpen.getSelectedFile());
+
+  if (fileSaveAs.draw())
+    saveMelonixFile(fileSaveAs.getSelectedFile());
 
   {
     ImGui::Begin("Control Center");
@@ -105,26 +116,39 @@ auto App::draw() -> void
   }
 }
 
+auto App::openFile(const std::string &fileName) -> void
+{
+  // Get the extension of the file name
+  const auto extension = fileName.substr(fileName.find_last_of(".") + 1);
+  if (extension != "melonix")
+    exportFile(fileName);
+  else
+    loadMelonixFile(fileName);
+}
+
 static auto GrainSpectrSize = 2 * 4096;
 
-auto App::loadFile(const std::string &fileName) -> void
+auto App::exportFile(const std::string &fileName) -> void
 {
-  LOG("open", fileName);
-  specCache = nullptr;
-  spec = nullptr;
-  audio = nullptr;
-  startTime = 0.;
-  rangeTime = 10.;
-  cursorSec = 0;
-  load(fileName);
+  LOG("export", fileName);
+  cleanup();
+  loadAudioFile(fileName);
+  markers.clear();
+  saveName = "";
 
+  preproc();
+}
+
+auto App::preproc() -> void
+{
+  selectedMarker = std::end(markers);
   {
     // generate grains
     grains.clear();
     auto start = 0;
     auto grainSize = estimateGrainSize(start);
     auto nextEstimation = GrainSpectrSize;
-    while (start < static_cast<int>(size - grainSize - 1))
+    while (start < static_cast<int>(data.size() - grainSize - 1))
     {
       bool found = false;
       for (auto i = 0; i < grainSize; ++i)
@@ -133,8 +157,7 @@ auto App::loadFile(const std::string &fileName) -> void
         const auto isZeroCrossing = data[idx] < 0 && data[idx + 1] >= 0;
         if (isZeroCrossing)
         {
-          grains.insert(std::make_pair(start, std::make_tuple(std::span<float>(data + start, idx - start), idx - start - grainSize)));
-          LOG("grain", start, idx - start);
+          grains.insert(std::make_pair(start, std::make_tuple(std::span<float>(data.data() + start, idx - start), idx - start - grainSize)));
           start = idx;
           found = true;
           break;
@@ -144,12 +167,12 @@ auto App::loadFile(const std::string &fileName) -> void
       {
         LOG("bad grain", start, grainSize);
         found = false;
-        for (auto i = start + grainSize + grainSize / 2; i < static_cast<int>(size - 1); ++i)
+        for (auto i = start + grainSize + grainSize / 2; i < static_cast<int>(data.size() - 1); ++i)
         {
           const auto isZeroCrossing = data[i] < 0 && data[i + 1] >= 0;
           if (isZeroCrossing)
           {
-            grains.insert(std::make_pair(start, std::make_tuple(std::span<float>(data + start, i - start), i - start - grainSize)));
+            grains.insert(std::make_pair(start, std::make_tuple(std::span<float>(data.data() + start, i - start), i - start - grainSize)));
             LOG("grain", start, i - start);
             start = i;
             found = true;
@@ -163,7 +186,6 @@ auto App::loadFile(const std::string &fileName) -> void
       {
         nextEstimation += GrainSpectrSize;
         grainSize = estimateGrainSize(start);
-        LOG("estimate", start, grainSize);
       }
     }
   }
@@ -181,9 +203,7 @@ auto App::loadFile(const std::string &fileName) -> void
   audio = std::make_unique<sdl::Audio>(
     nullptr, false, &want, &have, 0, [&](Uint8 *stream, int len) { playback(reinterpret_cast<float *>(stream), len / sizeof(float)); });
 
-  spec = std::make_unique<Spec>(std::span<float>{data, data + size});
-  markers.clear();
-  selectedMarker = std::end(markers);
+  spec = std::make_unique<Spec>(std::span<float>{data.data(), data.data() + data.size()});
 }
 
 auto App::playback(float *w, size_t dur) -> void
@@ -263,7 +283,6 @@ auto App::playback(float *w, size_t dur) -> void
       const auto overlap = (rand() % 200 + 700) / 1000.;
       const auto grainPart = static_cast<size_t>(grain.size() / rate * overlap);
       auto wavIdx = restWav.size() > grainPart ? restWav.size() - grainPart : 0U;
-      LOG("wav size", restWav.size(), "grain.size", grain.size(), "grainPart", grainPart, "wavIdx", wavIdx);
       for (auto i = 0;; ++i)
       {
         auto idxF = double{};
@@ -312,11 +331,11 @@ auto App::calcPicks() -> void
   picks.clear();
   auto lvl = 0U;
 
-  if (size <= (1 << (lvl + 1)))
+  if (data.size() <= (1 << (lvl + 1)))
     return;
   while (picks.size() <= lvl)
     picks.push_back({});
-  for (auto i = 0U; i < size / (1 << (lvl + 1)); ++i)
+  for (auto i = 0U; i < data.size() / (1 << (lvl + 1)); ++i)
   {
     const auto min = std::min(data[i * 2], data[i * 2 + 1]);
     const auto max = std::max(data[i * 2], data[i * 2 + 1]);
@@ -326,11 +345,11 @@ auto App::calcPicks() -> void
   for (;;)
   {
     ++lvl;
-    if (size <= (1 << (lvl + 1)))
+    if (data.size() <= (1 << (lvl + 1)))
       break;
     while (picks.size() <= lvl)
       picks.push_back({});
-    for (auto i = 0U; i < size / (1 << (lvl + 1)); ++i)
+    for (auto i = 0U; i < data.size() / (1 << (lvl + 1)); ++i)
     {
       const auto min = std::min(picks[lvl - 1][i * 2].first, picks[lvl - 1][i * 2 + 1].first);
       const auto max = std::max(picks[lvl - 1][i * 2].second, picks[lvl - 1][i * 2 + 1].second);
@@ -344,7 +363,7 @@ auto App::getMinMaxFromRange(int start, int end) -> std::pair<float, float>
 {
   if (start >= end)
   {
-    if (start >= 0 && start < static_cast<int>(size))
+    if (start >= 0 && start < static_cast<int>(data.size()))
       return {data[start], data[start]};
     return {0.f, 0.f};
   }
@@ -352,7 +371,7 @@ auto App::getMinMaxFromRange(int start, int end) -> std::pair<float, float>
   if (start < 0 || end < 0)
     return {0.f, 0.f};
 
-  if (start >= static_cast<int>(size) || end >= static_cast<int>(size))
+  if (start >= static_cast<int>(data.size()) || end >= static_cast<int>(data.size()))
     return {0.f, 0.f};
 
   if (end - start == 1)
@@ -576,7 +595,7 @@ auto App::drawMarkers() -> void
   glEnd();
 }
 
-auto App::load(const std::string &path) -> void
+auto App::loadAudioFile(const std::string &path) -> void
 {
   // get format from audio file
   AVFormatContext *format = avformat_alloc_context();
@@ -649,8 +668,7 @@ auto App::load(const std::string &path) -> void
   }
 
   // iterate through frames
-  data = nullptr;
-  size = 0;
+  data.clear();
   while (av_read_frame(format, packet) >= 0)
   {
     // decode one frame
@@ -673,9 +691,9 @@ auto App::load(const std::string &path) -> void
     av_samples_alloc((uint8_t **)&buffer, NULL, 1, frame->nb_samples, AV_SAMPLE_FMT_FLT, 0);
     int frame_count = swr_convert(swr, (uint8_t **)&buffer, frame->nb_samples, (const uint8_t **)frame->data, frame->nb_samples);
     // append resampled frames to data
-    data = (float *)realloc(data, (size + frame->nb_samples) * sizeof(float));
-    memcpy(data + size, buffer, frame_count * sizeof(float));
-    size += frame_count;
+    const auto sz = data.size();
+    data.resize(sz + frame->nb_samples);
+    memcpy(data.data() + sz, buffer, frame_count * sizeof(float));
   }
 
 // enable warnings about API calls that are deprecated
@@ -688,12 +706,12 @@ auto App::load(const std::string &path) -> void
   avcodec_close(codec);
   avformat_free_context(format);
 
-  LOG("File loaded", path, "duration", 1. * size / sampleRate, "sample rate", sampleRate);
+  LOG("File loaded", path, "duration", 1. * data.size() / sampleRate, "sample rate", sampleRate);
 }
 
 auto App::mouseMotion(int x, int y, int dx, int dy, uint32_t state) -> void
 {
-  if (size == 0)
+  if (data.size() == 0)
     return;
 
   y -= 20;
@@ -704,8 +722,8 @@ auto App::mouseMotion(int x, int y, int dx, int dy, uint32_t state) -> void
   if (state & SDL_BUTTON_MMASK)
   {
     auto modState = SDL_GetModState();
-    const auto leftLimit = std::max(-rangeTime * 0.5, -.5 * size / sampleRate);
-    const auto rightLimit = std::min(size / sampleRate + rangeTime * 0.5, 1.5 * size / sampleRate);
+    const auto leftLimit = std::max(-rangeTime * 0.5, -.5 * data.size() / sampleRate);
+    const auto rightLimit = std::min(data.size() / sampleRate + rangeTime * 0.5, 1.5 * data.size() / sampleRate);
     if ((modState & (KMOD_LCTRL | KMOD_RCTRL)) != 0)
     {
       // zoom in or zoom out
@@ -789,12 +807,16 @@ auto App::mouseMotion(int x, int y, int dx, int dy, uint32_t state) -> void
 
 auto App::invalidateCache() const -> void
 {
+  if (audio)
+    audio->lock();
   sample2TimeCache.clear();
   time2SampleCache.clear();
   time2PitchBendCache.clear();
   waveformCache.clear();
   if (specCache)
     specCache->clear();
+  if (audio)
+    audio->unlock();
 }
 
 auto App::getTex(double start) -> GLuint
@@ -843,7 +865,7 @@ auto App::mouseButton(int x, int y, uint32_t state, uint8_t button) -> void
   {
     if (state != SDL_PRESSED)
       return;
-    if (size < 2)
+    if (data.size() < 2)
       return;
 
     if (y > Height)
@@ -876,8 +898,8 @@ auto App::mouseButton(int x, int y, uint32_t state, uint8_t button) -> void
         const auto pitchBend = time2PitchBend(time);
         markers.push_back(Marker{sample, note - pitchBend, 0., pitchBend});
         std::sort(markers.begin(), markers.end(), [](const auto &a, const auto &b) { return a.sample < b.sample; });
-        invalidateCache();
         audio->unlock();
+        invalidateCache();
         selectedMarker = std::find_if(std::begin(markers), std::end(markers), [sample](const auto &m) { return m.sample == sample; });
       }
       else
@@ -893,7 +915,7 @@ auto App::mouseButton(int x, int y, uint32_t state, uint8_t button) -> void
     if (state != SDL_PRESSED)
       return;
     // remove marker
-    if (size < 2)
+    if (data.size() < 2)
       return;
     const auto time = x * rangeTime / Width + startTime;
     const auto note = (Height - y) * rangeNote / Height + startNote;
@@ -907,8 +929,8 @@ auto App::mouseButton(int x, int y, uint32_t state, uint8_t button) -> void
       audio->lock();
       markers.erase(it);
       selectedMarker = std::end(markers);
-      invalidateCache();
       audio->unlock();
+      invalidateCache();
     }
   }
 }
@@ -924,7 +946,7 @@ auto App::togglePlay() -> void
 
 auto App::cursorLeft() -> void
 {
-  if (size < 2)
+  if (data.size() < 2)
     return;
   ImGuiIO &io = ImGui::GetIO();
   (void)io;
@@ -939,7 +961,7 @@ auto App::cursorLeft() -> void
 
 auto App::cursorRight() -> void
 {
-  if (size < 2)
+  if (data.size() < 2)
     return;
   const auto &io = ImGui::GetIO();
   followMode = false;
@@ -1015,7 +1037,7 @@ auto App::time2Sample(double val) const -> int
 
 auto App::duration() const -> double
 {
-  return sample2Time(size - 1);
+  return sample2Time(data.size() - 1);
 }
 
 auto App::time2PitchBend(double val) const -> double
@@ -1081,7 +1103,7 @@ auto App::estimateGrainSize(int start) const -> int
   static GrainSpec spec;
   for (auto i = 0; i < GrainSpectrSize; ++i)
   {
-    spec.input[i][0] = data[std::min(start + i, static_cast<int>(size - 1))];
+    spec.input[i][0] = data[std::min(start + i, static_cast<int>(data.size() - 1))];
     spec.input[i][1] = 0;
   }
   fftw_execute(spec.plan);
@@ -1110,7 +1132,57 @@ auto App::estimateGrainSize(int start) const -> int
   }
 
   const auto maxFreq = std::max(1., 1. * maxIndex * sampleRate / GrainSpectrSize / 4.);
-  LOG("freq", maxFreq);
-
   return std::ceil(1. * preferredGrainSize * maxFreq / sampleRate) * sampleRate / maxFreq;
+}
+
+auto App::loadMelonixFile(const std::string &fileName) -> void
+{
+  cleanup();
+
+  // load file into memory
+  auto file = std::ifstream{fileName, std::ios::binary};
+  if (!file.is_open())
+  {
+    LOG("failed to open file", fileName);
+    return;
+  }
+  auto buffer = std::vector<char>{};
+  buffer.resize(static_cast<size_t>(file.seekg(0, std::ios::end).tellg()));
+  file.seekg(0, std::ios::beg);
+  file.read(buffer.data(), buffer.size());
+
+  IStrm st(buffer.data(), buffer.data() + buffer.size());
+  ::deser(st, *this);
+
+  preproc();
+}
+
+auto App::cleanup() -> void
+{
+  specCache = nullptr;
+  spec = nullptr;
+  audio = nullptr;
+  startTime = 0.;
+  rangeTime = 10.;
+  cursorSec = 0;
+}
+
+auto App::saveMelonixFile(std::string fileName) -> void
+{
+  auto ext = std::filesystem::path(fileName).extension().string();
+  if (ext != "melonix")
+    fileName += ".melonix";
+
+  saveName = fileName;
+
+  OStrm st;
+  ::ser(st, *this);
+
+  auto file = std::ofstream{fileName, std::ios::binary};
+  if (!file.is_open())
+  {
+    LOG("failed to open file", fileName);
+    return;
+  }
+  file.write(st.str().data(), st.str().size());
 }

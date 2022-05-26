@@ -1,11 +1,11 @@
-#include "file_open.hpp"
+#include "file_save_as.hpp"
 #include <functional>
 #include <imgui/imgui.h>
 #include <log/log.hpp>
 
-auto FileOpen::draw() -> bool
+auto FileSaveAs::draw() -> bool
 {
-  if (!ImGui::BeginPopupModal("FileOpen", NULL, ImGuiWindowFlags_AlwaysAutoResize))
+  if (!ImGui::BeginPopupModal("FileSaveAs", NULL, ImGuiWindowFlags_AlwaysAutoResize))
     return false;
 
   auto ret = false;
@@ -57,6 +57,7 @@ auto FileOpen::draw() -> bool
           else
           {
             selectedFile = file;
+            memcpy(fileName.data(), file.filename().string().c_str(), file.filename().string().size() + 1);
             ImGui::CloseCurrentPopup();
             ret = true;
           }
@@ -64,6 +65,7 @@ auto FileOpen::draw() -> bool
         else
         {
           selectedFile = file;
+          memcpy(fileName.data(), file.filename().string().c_str(), file.filename().string().size() + 1);
         }
       }
     }
@@ -72,14 +74,9 @@ auto FileOpen::draw() -> bool
     ImGui::EndListBox();
   }
 
-  // Show the selected file
-  if (!selectedFile.empty())
-    ImGui::Text("%s", selectedFile.filename().c_str());
-  else
-    ImGui::Text("No file selected");
-
+  ImGui::InputText("##selectedFile", fileName.data(), fileName.size());
   ImGui::SameLine(700 - 2 * 120 - 10);
-  if (ImGui::Button("Open", ImVec2(120, 0)))
+  if (ImGui::Button("Save", ImVec2(120, 0)))
   {
     ImGui::CloseCurrentPopup();
     ret = true;
@@ -92,7 +89,12 @@ auto FileOpen::draw() -> bool
   return ret;
 }
 
-auto FileOpen::getSelectedFile() const -> std::filesystem::path
+auto FileSaveAs::getSelectedFile() const -> std::string
 {
-  return selectedFile;
+  return fileName.data();
+}
+
+FileSaveAs::FileSaveAs()
+{
+  memset(fileName.data(), 0, fileName.size());
 }

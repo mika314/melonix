@@ -107,7 +107,7 @@ int main(int argc, const char *argv[])
   App app;
 
   if (argc > 1)
-    app.loadFile(argv[1]);
+    app.openFile(argv[1]);
 
   while (!done)
   {

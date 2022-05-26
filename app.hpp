@@ -1,5 +1,6 @@
 #pragma once
 #include "file_open.hpp"
+#include "file_save_as.hpp"
 #include "marker.hpp"
 #include "range.hpp"
 #include "spec.hpp"
@@ -8,6 +9,7 @@
 #include <list>
 #include <map>
 #include <sdlpp/sdlpp.hpp>
+#include <ser/macro.hpp>
 #include <unordered_map>
 
 #if defined(IMGUI_IMPL_OPENGL_ES2)
@@ -26,19 +28,19 @@ public:
   auto togglePlay() -> void;
   auto cursorLeft() -> void;
   auto cursorRight() -> void;
-  auto loadFile(const std::string &) -> void;
+  auto openFile(const std::string &) -> void;
 
 private:
   FileOpen fileOpen;
-  float *data = nullptr;
+  FileSaveAs fileSaveAs;
+  std::vector<float> data;
   std::map<int, std::tuple<std::span<float>, int>> grains;
-  size_t size = 0;
   int sampleRate = 0;
   std::vector<std::vector<std::pair<float, float>>> picks;
   double startTime = 0.;
   double rangeTime = 10.;
-  double startNote = 24;
-  double rangeNote = 60;
+  double startNote = 24.;
+  double rangeNote = 60.;
   mutable std::vector<std::pair<float, float>> waveformCache;
   double cursorSec = 0.0;
   bool isAudioPlaying = false;
@@ -58,19 +60,36 @@ private:
   mutable std::unordered_map<int, int> time2SampleCache;
   mutable std::unordered_map<int, double> time2PitchBendCache;
   std::vector<float> restWav;
-  float tempo = 130;
+  float tempo = 130.f;
   std::span<float> prevGrain;
+  std::string saveName;
 
+public:
+#define SER_PROP_LIST   \
+  SER_PROP(data);       \
+  SER_PROP(sampleRate); \
+  SER_PROP(brightness); \
+  SER_PROP(markers);    \
+  SER_PROP(tempo);      \
+  SER_PROP(saveName);
+  SER_DEF_PROPS();
+#undef SER_PROP_LIST
+private:
   auto calcPicks() -> void;
+  auto cleanup() -> void;
   auto drawMarkers() -> void;
   auto duration() const -> double;
   auto estimateGrainSize(int start) const -> int;
+  auto exportFile(const std::string &) -> void;
   auto getMinMaxFromRange(int start, int end) -> std::pair<float, float>;
   auto getTex(double start) -> GLuint;
   auto invalidateCache() const -> void;
-  auto load(const std::string &) -> void;
+  auto loadAudioFile(const std::string &) -> void;
+  auto loadMelonixFile(const std::string &) -> void;
   auto playback(float *, size_t) -> void;
+  auto preproc() -> void;
   auto sample2Time(int) const -> double;
+  auto saveMelonixFile(std::string) -> void;
   auto time2PitchBend(double) const -> double;
   auto time2Sample(double) const -> int;
 };
