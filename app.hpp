@@ -31,9 +31,10 @@ public:
   auto openFile(const std::string &) -> void;
 
 private:
+  const int version = 1;
   FileOpen fileOpen;
   FileSaveAs fileSaveAs;
-  std::vector<float> data;
+  std::vector<float> wavData;
   std::map<int, std::tuple<std::span<float>, int>> grains;
   int sampleRate = 0;
   std::vector<std::vector<std::pair<float, float>>> picks;
@@ -66,12 +67,11 @@ private:
 
 public:
 #define SER_PROP_LIST   \
-  SER_PROP(data);       \
+  SER_PROP(wavData);    \
   SER_PROP(sampleRate); \
   SER_PROP(brightness); \
   SER_PROP(markers);    \
-  SER_PROP(tempo);      \
-  SER_PROP(saveName);
+  SER_PROP(tempo);
   SER_DEF_PROPS();
 #undef SER_PROP_LIST
 private:

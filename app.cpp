@@ -148,16 +148,16 @@ auto App::preproc() -> void
     auto start = 0;
     auto grainSize = estimateGrainSize(start);
     auto nextEstimation = GrainSpectrSize;
-    while (start < static_cast<int>(data.size() - grainSize - 1))
+    while (start < static_cast<int>(wavData.size() - grainSize - 1))
     {
       bool found = false;
       for (auto i = 0; i < grainSize; ++i)
       {
         const auto idx = start + grainSize + (i % 2 == 0 ? i / 2 : -i / 2);
-        const auto isZeroCrossing = data[idx] < 0 && data[idx + 1] >= 0;
+        const auto isZeroCrossing = wavData[idx] < 0 && wavData[idx + 1] >= 0;
         if (isZeroCrossing)
         {
-          grains.insert(std::make_pair(start, std::make_tuple(std::span<float>(data.data() + start, idx - start), idx - start - grainSize)));
+          grains.insert(std::make_pair(start, std::make_tuple(std::span<float>(wavData.data() + start, idx - start), idx - start - grainSize)));
           start = idx;
           found = true;
           break;
@@ -167,12 +167,12 @@ auto App::preproc() -> void
       {
         LOG("bad grain", start, grainSize);
         found = false;
-        for (auto i = start + grainSize + grainSize / 2; i < static_cast<int>(data.size() - 1); ++i)
+        for (auto i = start + grainSize + grainSize / 2; i < static_cast<int>(wavData.size() - 1); ++i)
         {
-          const auto isZeroCrossing = data[i] < 0 && data[i + 1] >= 0;
+          const auto isZeroCrossing = wavData[i] < 0 && wavData[i + 1] >= 0;
           if (isZeroCrossing)
           {
-            grains.insert(std::make_pair(start, std::make_tuple(std::span<float>(data.data() + start, i - start), i - start - grainSize)));
+            grains.insert(std::make_pair(start, std::make_tuple(std::span<float>(wavData.data() + start, i - start), i - start - grainSize)));
             LOG("grain", start, i - start);
             start = i;
             found = true;
@@ -203,7 +203,7 @@ auto App::preproc() -> void
   audio = std::make_unique<sdl::Audio>(
     nullptr, false, &want, &have, 0, [&](Uint8 *stream, int len) { playback(reinterpret_cast<float *>(stream), len / sizeof(float)); });
 
-  spec = std::make_unique<Spec>(std::span<float>{data.data(), data.data() + data.size()});
+  spec = std::make_unique<Spec>(std::span<float>{wavData.data(), wavData.data() + wavData.size()});
 }
 
 auto App::playback(float *w, size_t dur) -> void
@@ -331,25 +331,25 @@ auto App::calcPicks() -> void
   picks.clear();
   auto lvl = 0U;
 
-  if (data.size() <= (1 << (lvl + 1)))
+  if (wavData.size() <= (1 << (lvl + 1)))
     return;
   while (picks.size() <= lvl)
     picks.push_back({});
-  for (auto i = 0U; i < data.size() / (1 << (lvl + 1)); ++i)
+  for (auto i = 0U; i < wavData.size() / (1 << (lvl + 1)); ++i)
   {
-    const auto min = std::min(data[i * 2], data[i * 2 + 1]);
-    const auto max = std::max(data[i * 2], data[i * 2 + 1]);
+    const auto min = std::min(wavData[i * 2], wavData[i * 2 + 1]);
+    const auto max = std::max(wavData[i * 2], wavData[i * 2 + 1]);
     picks[lvl].push_back(std::make_pair(min, max));
   }
 
   for (;;)
   {
     ++lvl;
-    if (data.size() <= (1 << (lvl + 1)))
+    if (wavData.size() <= (1 << (lvl + 1)))
       break;
     while (picks.size() <= lvl)
       picks.push_back({});
-    for (auto i = 0U; i < data.size() / (1 << (lvl + 1)); ++i)
+    for (auto i = 0U; i < wavData.size() / (1 << (lvl + 1)); ++i)
     {
       const auto min = std::min(picks[lvl - 1][i * 2].first, picks[lvl - 1][i * 2 + 1].first);
       const auto max = std::max(picks[lvl - 1][i * 2].second, picks[lvl - 1][i * 2 + 1].second);
@@ -363,19 +363,19 @@ auto App::getMinMaxFromRange(int start, int end) -> std::pair<float, float>
 {
   if (start >= end)
   {
-    if (start >= 0 && start < static_cast<int>(data.size()))
-      return {data[start], data[start]};
+    if (start >= 0 && start < static_cast<int>(wavData.size()))
+      return {wavData[start], wavData[start]};
     return {0.f, 0.f};
   }
 
   if (start < 0 || end < 0)
     return {0.f, 0.f};
 
-  if (start >= static_cast<int>(data.size()) || end >= static_cast<int>(data.size()))
+  if (start >= static_cast<int>(wavData.size()) || end >= static_cast<int>(wavData.size()))
     return {0.f, 0.f};
 
   if (end - start == 1)
-    return {data[start], data[start]};
+    return {wavData[start], wavData[start]};
 
   // calculate level
   const auto lvl = static_cast<size_t>(std::log2(end - start));
@@ -671,7 +671,7 @@ auto App::loadAudioFile(const std::string &path) -> void
   }
 
   // iterate through frames
-  data.clear();
+  wavData.clear();
   while (av_read_frame(format, packet) >= 0)
   {
     // decode one frame
@@ -694,9 +694,9 @@ auto App::loadAudioFile(const std::string &path) -> void
     av_samples_alloc((uint8_t **)&buffer, NULL, 1, frame->nb_samples, AV_SAMPLE_FMT_FLT, 0);
     int frame_count = swr_convert(swr, (uint8_t **)&buffer, frame->nb_samples, (const uint8_t **)frame->data, frame->nb_samples);
     // append resampled frames to data
-    const auto sz = data.size();
-    data.resize(sz + frame->nb_samples);
-    memcpy(data.data() + sz, buffer, frame_count * sizeof(float));
+    const auto sz = wavData.size();
+    wavData.resize(sz + frame->nb_samples);
+    memcpy(wavData.data() + sz, buffer, frame_count * sizeof(float));
   }
 
 // enable warnings about API calls that are deprecated
@@ -709,12 +709,12 @@ auto App::loadAudioFile(const std::string &path) -> void
   avcodec_close(codec);
   avformat_free_context(format);
 
-  LOG("File loaded", path, "duration", 1. * data.size() / sampleRate, "sample rate", sampleRate);
+  LOG("File loaded", path, "duration", 1. * wavData.size() / sampleRate, "sample rate", sampleRate);
 }
 
 auto App::mouseMotion(int x, int y, int dx, int dy, uint32_t state) -> void
 {
-  if (data.size() == 0)
+  if (wavData.size() == 0)
     return;
 
   y -= 20;
@@ -725,8 +725,8 @@ auto App::mouseMotion(int x, int y, int dx, int dy, uint32_t state) -> void
   if (state & SDL_BUTTON_MMASK)
   {
     auto modState = SDL_GetModState();
-    const auto leftLimit = std::max(-rangeTime * 0.5, -.5 * data.size() / sampleRate);
-    const auto rightLimit = std::min(data.size() / sampleRate + rangeTime * 0.5, 1.5 * data.size() / sampleRate);
+    const auto leftLimit = std::max(-rangeTime * 0.5, -.5 * wavData.size() / sampleRate);
+    const auto rightLimit = std::min(wavData.size() / sampleRate + rangeTime * 0.5, 1.5 * wavData.size() / sampleRate);
     if ((modState & (KMOD_LCTRL | KMOD_RCTRL)) != 0)
     {
       // zoom in or zoom out
@@ -868,7 +868,7 @@ auto App::mouseButton(int x, int y, uint32_t state, uint8_t button) -> void
   {
     if (state != SDL_PRESSED)
       return;
-    if (data.size() < 2)
+    if (wavData.size() < 2)
       return;
 
     if (y > Height)
@@ -918,7 +918,7 @@ auto App::mouseButton(int x, int y, uint32_t state, uint8_t button) -> void
     if (state != SDL_PRESSED)
       return;
     // remove marker
-    if (data.size() < 2)
+    if (wavData.size() < 2)
       return;
     const auto time = x * rangeTime / Width + startTime;
     const auto note = (Height - y) * rangeNote / Height + startNote;
@@ -949,7 +949,7 @@ auto App::togglePlay() -> void
 
 auto App::cursorLeft() -> void
 {
-  if (data.size() < 2)
+  if (wavData.size() < 2)
     return;
   ImGuiIO &io = ImGui::GetIO();
   (void)io;
@@ -964,7 +964,7 @@ auto App::cursorLeft() -> void
 
 auto App::cursorRight() -> void
 {
-  if (data.size() < 2)
+  if (wavData.size() < 2)
     return;
   const auto &io = ImGui::GetIO();
   followMode = false;
@@ -1040,7 +1040,7 @@ auto App::time2Sample(double val) const -> int
 
 auto App::duration() const -> double
 {
-  return sample2Time(data.size() - 1);
+  return sample2Time(wavData.size() - 1);
 }
 
 auto App::time2PitchBend(double val) const -> double
@@ -1106,7 +1106,7 @@ auto App::estimateGrainSize(int start) const -> int
   static GrainSpec spec;
   for (auto i = 0; i < GrainSpectrSize; ++i)
   {
-    spec.input[i][0] = data[std::min(start + i, static_cast<int>(data.size() - 1))];
+    spec.input[i][0] = wavData[std::min(start + i, static_cast<int>(wavData.size() - 1))];
     spec.input[i][1] = 0;
   }
   fftw_execute(spec.plan);
@@ -1157,8 +1157,16 @@ auto App::loadMelonixFile(const std::string &fileName) -> void
   file.read(buffer.data(), buffer.size());
 
   IStrm st(buffer.data(), buffer.data() + buffer.size());
+  int v;
+  ::deser(st, v);
+  if (v != version)
+  {
+    LOG("version mismatch", v, version);
+    return;
+  }
   ::deser(st, *this);
 
+  saveName = std::filesystem::absolute(fileName).string();
   preproc();
 }
 
@@ -1178,11 +1186,13 @@ auto App::saveMelonixFile(std::string fileName) -> void
   if (ext != ".melonix")
     fileName += ".melonix";
 
-  saveName = fileName;
+  // save absolute path to the file
+  saveName = std::filesystem::absolute(fileName).string();
 
-  LOG("saveMelonixFile", fileName);
+  LOG("saveMelonixFile", saveName);
 
   OStrm st;
+  ::ser(st, version);
   ::ser(st, *this);
 
   auto file = std::ofstream{fileName, std::ios::binary};
