@@ -1,10 +1,10 @@
 #pragma once
-#include "file_open.hpp"
-#include "file_save_as.hpp"
+#include "file-open.hpp"
+#include "file-save-as.hpp"
 #include "marker.hpp"
 #include "range.hpp"
 #include "spec.hpp"
-#include "spec_cache.hpp"
+#include "spec-cache.hpp"
 #include <imgui/imgui.h>
 #include <list>
 #include <map>
@@ -21,6 +21,7 @@
 class App
 {
 public:
+  App();
   auto draw() -> void;
   auto glDraw() -> void;
   auto mouseMotion(int x, int y, int dx, int dy, uint32_t state) -> void;
@@ -34,6 +35,7 @@ private:
   const int version = 1;
   FileOpen fileOpen;
   FileSaveAs fileSaveAs;
+  FileSaveAs exportWavDlg;
   std::vector<float> wavData;
   std::map<int, std::tuple<std::span<float>, int>> grains;
   int sampleRate = 0;
@@ -56,14 +58,14 @@ private:
   Texture pianoTexture;
   std::vector<Marker> markers;
   std::vector<Marker>::iterator selectedMarker;
-  double bias = 0.;
   mutable std::unordered_map<int, double> sample2TimeCache;
   mutable std::unordered_map<int, int> time2SampleCache;
   mutable std::unordered_map<int, double> time2PitchBendCache;
-  std::vector<float> restWav;
   float tempo = 130.f;
-  std::span<float> prevGrain;
   std::string saveName;
+  double bias = 0.;
+  std::vector<float> restWav;
+  std::span<float> prevGrain;
 
 public:
 #define SER_PROP_LIST   \
@@ -80,14 +82,16 @@ private:
   auto drawMarkers() -> void;
   auto duration() const -> double;
   auto estimateGrainSize(int start) const -> int;
-  auto exportFile(const std::string &) -> void;
+  auto exportWav(const std::string &) -> void;
   auto getMinMaxFromRange(int start, int end) -> std::pair<float, float>;
   auto getTex(double start) -> GLuint;
+  auto importFile(const std::string &) -> void;
   auto invalidateCache() const -> void;
   auto loadAudioFile(const std::string &) -> void;
   auto loadMelonixFile(const std::string &) -> void;
   auto playback(float *, size_t) -> void;
   auto preproc() -> void;
+  auto process(double cursor, std::vector<float> &wav) -> double;
   auto sample2Time(int) const -> double;
   auto saveMelonixFile(std::string) -> void;
   auto time2PitchBend(double) const -> double;

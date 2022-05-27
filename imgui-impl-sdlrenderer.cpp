@@ -25,7 +25,7 @@
 //  2021-09-21: Initial version.
 
 #include <imgui/imgui.h>
-#include "imgui_impl_sdlrenderer.h"
+#include "imgui-impl-sdlrenderer.h"
 #if defined(_MSC_VER) && _MSC_VER <= 1500 // MSVC 2008 or earlier
 #include <stddef.h>     // intptr_t
 #else

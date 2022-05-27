@@ -1,4 +1,5 @@
 #include "app.hpp"
+#include "save-wav.hpp"
 #include <SDL.h>
 #include <algorithm>
 #include <cmath>
@@ -25,17 +26,23 @@ auto App::draw() -> void
   {
     if (ImGui::BeginMenu("File"))
     {
-      if (ImGui::MenuItem("Open"))
+      if (ImGui::MenuItem("Open..."))
         postponedAction = [&]() { ImGui::OpenPopup("FileOpen"); };
+
       if (ImGui::MenuItem("Save"))
       {
         if (!saveName.empty())
           saveMelonixFile(saveName);
         else
-          postponedAction = [&]() { ImGui::OpenPopup("FileSaveAs"); };
+          postponedAction = [&]() { ImGui::OpenPopup(fileSaveAs.dialogName.c_str()); };
       }
-      if (ImGui::MenuItem("Save As"))
-        postponedAction = [&]() { ImGui::OpenPopup("FileSaveAs"); };
+
+      if (ImGui::MenuItem("Save As..."))
+        postponedAction = [&]() { ImGui::OpenPopup(fileSaveAs.dialogName.c_str()); };
+
+      if (ImGui::MenuItem("Export WAV..."))
+        postponedAction = [&]() { ImGui::OpenPopup(exportWavDlg.dialogName.c_str()); };
+
       if (ImGui::MenuItem("Quit")) {}
       ImGui::EndMenu();
     }
@@ -49,6 +56,9 @@ auto App::draw() -> void
 
   if (fileSaveAs.draw())
     saveMelonixFile(fileSaveAs.getSelectedFile());
+
+  if (exportWavDlg.draw())
+    exportWav(exportWavDlg.getSelectedFile());
 
   {
     ImGui::Begin("Control Center");
@@ -121,16 +131,16 @@ auto App::openFile(const std::string &fileName) -> void
   // Get the extension of the file name
   const auto extension = fileName.substr(fileName.find_last_of(".") + 1);
   if (extension != "melonix")
-    exportFile(fileName);
+    importFile(fileName);
   else
     loadMelonixFile(fileName);
 }
 
 static auto GrainSpectrSize = 2 * 4096;
 
-auto App::exportFile(const std::string &fileName) -> void
+auto App::importFile(const std::string &fileName) -> void
 {
-  LOG("export", fileName);
+  LOG("import", fileName);
   cleanup();
   loadAudioFile(fileName);
   markers.clear();
@@ -226,89 +236,9 @@ auto App::playback(float *w, size_t dur) -> void
     return;
   }
 
-  auto tmpCursor = cursorSec;
-  const auto sampleOffset = restWav.size();
-
+  auto tmpCursor = cursorSec + 1. * restWav.size() / sampleRate;
   while (restWav.size() < dur + preferredGrainSize)
-  {
-    const auto sample = time2Sample(tmpCursor) + sampleOffset;
-    const auto pitchBend = time2PitchBend(tmpCursor);
-    const auto rate = pow(2, pitchBend / 12);
-    auto it = grains.lower_bound(sample);
-
-    if (it == std::end(grains))
-    {
-      isAudioPlaying = false;
-      return;
-    }
-
-    const auto grain = std::get<0>(it->second);
-    const auto nextGrainFirstSample = [&]() {
-      auto sz = 0;
-      for (auto i = 0;; ++i)
-      {
-        auto idxF = double{};
-        std::modf(i * rate + bias, &idxF);
-        const auto idx = static_cast<size_t>(idxF);
-        if (idx >= grain.size())
-          break;
-        ++sz;
-      };
-      const auto sample = time2Sample(tmpCursor + 1. * sz / sampleRate);
-      auto it = grains.lower_bound(sample);
-      if (it == std::end(grains))
-        return 0.f;
-
-      return std::get<0>(it->second).front();
-    }();
-    const auto diff = &grain[0] - &prevGrain[prevGrain.size()];
-    prevGrain = grain;
-
-    auto sz = 0;
-    if (diff == 0)
-    {
-      for (auto i = 0;; ++i)
-      {
-        auto idxF = double{};
-        const auto curBias = std::modf(i * rate + bias, &idxF);
-        const auto idx = static_cast<size_t>(idxF);
-        if (idx >= grain.size())
-          break;
-        restWav.push_back((1. - curBias) * grain[idx] + curBias * (idx + 1 < grain.size() ? grain[idx + 1] : nextGrainFirstSample));
-        ++sz;
-      }
-    }
-    else
-    {
-      const auto overlap = (rand() % 200 + 700) / 1000.;
-      const auto grainPart = static_cast<size_t>(grain.size() / rate * overlap);
-      auto wavIdx = restWav.size() > grainPart ? restWav.size() - grainPart : 0U;
-      for (auto i = 0;; ++i)
-      {
-        auto idxF = double{};
-        const auto curBias = std::modf(i * rate + bias, &idxF);
-        const auto idx = static_cast<size_t>(idxF);
-        if (idx >= grain.size())
-          break;
-        const auto v = (1. - curBias) * grain[idx] + curBias * (idx + 1 < grain.size() ? grain[idx + 1] : nextGrainFirstSample);
-        if (wavIdx >= restWav.size())
-        {
-          restWav.resize(wavIdx + 1);
-          ++sz;
-        }
-
-        if (idx > grain.size() * overlap)
-          restWav[wavIdx] = v;
-        else
-        {
-          const auto k = 1.f * idx / (grain.size() * overlap);
-          restWav[wavIdx] = sin((1.f - k) * 3.1415926 / 2) * restWav[wavIdx] + sin(k * 3.1415926 / 2) * v;
-        }
-        ++wavIdx;
-      }
-    }
-    tmpCursor += 1. * sz / sampleRate;
-  }
+    tmpCursor += process(tmpCursor, restWav);
 
   if (!restWav.empty())
   {
@@ -324,6 +254,89 @@ auto App::playback(float *w, size_t dur) -> void
     restWav.erase(restWav.begin(), restWav.begin() + sz);
     cursorSec += 1. * sz / sampleRate;
   }
+}
+
+auto App::process(double cursor, std::vector<float> &wav) -> double
+{
+  const auto sample = time2Sample(cursor);
+  const auto pitchBend = time2PitchBend(cursor);
+  const auto rate = pow(2, pitchBend / 12);
+  auto it = grains.lower_bound(sample);
+
+  if (it == std::end(grains))
+  {
+    isAudioPlaying = false;
+    for (auto i = 0; i < preferredGrainSize; ++i)
+      wav.push_back(0.f);
+    return 0;
+  }
+
+  const auto grain = std::get<0>(it->second);
+  const auto nextGrainFirstSample = [&]() {
+    auto sz = 0;
+    for (auto i = 0;; ++i)
+    {
+      auto idxF = double{};
+      std::modf(i * rate + bias, &idxF);
+      const auto idx = static_cast<size_t>(idxF);
+      if (idx >= grain.size())
+        break;
+      ++sz;
+    }
+    const auto sample = time2Sample(cursor + 1. * sz / sampleRate);
+    auto it = grains.lower_bound(sample);
+    if (it == std::end(grains))
+      return 0.f;
+
+    return std::get<0>(it->second).front();
+  }();
+  const auto diff = &grain[0] - &prevGrain[prevGrain.size()];
+  prevGrain = grain;
+
+  auto sz = 0;
+  if (diff == 0)
+  {
+    for (auto i = 0;; ++i)
+    {
+      auto idxF = double{};
+      const auto curBias = std::modf(i * rate + bias, &idxF);
+      const auto idx = static_cast<size_t>(idxF);
+      if (idx >= grain.size())
+        break;
+      wav.push_back((1. - curBias) * grain[idx] + curBias * (idx + 1 < grain.size() ? grain[idx + 1] : nextGrainFirstSample));
+      ++sz;
+    }
+  }
+  else
+  {
+    const auto overlap = (rand() % 200 + 700) / 1000.;
+    const auto grainPart = static_cast<size_t>(grain.size() / rate * overlap);
+    auto wavIdx = wav.size() > grainPart ? wav.size() - grainPart : 0U;
+    for (auto i = 0;; ++i)
+    {
+      auto idxF = double{};
+      const auto curBias = std::modf(i * rate + bias, &idxF);
+      const auto idx = static_cast<size_t>(idxF);
+      if (idx >= grain.size())
+        break;
+      const auto v = (1. - curBias) * grain[idx] + curBias * (idx + 1 < grain.size() ? grain[idx + 1] : nextGrainFirstSample);
+      if (wavIdx >= wav.size())
+      {
+        wav.resize(wavIdx + 1);
+        ++sz;
+      }
+
+      if (idx > grain.size() * overlap)
+        wav[wavIdx] = v;
+      else
+      {
+        const auto k = 1.f * idx / (grain.size() * overlap);
+        wav[wavIdx] = sin((1.f - k) * 3.1415926 / 2) * wav[wavIdx] + sin(k * 3.1415926 / 2) * v;
+      }
+      ++wavIdx;
+    }
+  }
+  return 1. * sz / sampleRate;
 }
 
 auto App::calcPicks() -> void
@@ -1202,4 +1215,29 @@ auto App::saveMelonixFile(std::string fileName) -> void
     return;
   }
   file.write(st.str().data(), st.str().size());
+}
+
+App::App() : fileSaveAs("Save As..."), exportWavDlg("Export WAV") {}
+
+auto App::exportWav(const std::string &fileName) -> void
+{
+  isAudioPlaying = false;
+  if (audio)
+    audio->pause(true);
+
+  auto pcm = std::vector<float>{};
+  for (auto tmpCursor = 0.;;)
+  {
+    const auto dt = process(tmpCursor, pcm);
+    if (dt <= 0.)
+      break;
+    tmpCursor += dt;
+  }
+
+  auto pcm16 = std::vector<int16_t>{};
+  pcm16.resize(pcm.size());
+  for (auto i = 0U; i < pcm.size(); ++i)
+    pcm16[i] = static_cast<int16_t>(pcm[i] * 32767.);
+
+  saveWav(fileName, pcm16, sampleRate);
 }

@@ -64,7 +64,7 @@
 //  2016-10-15: Misc: Added a void* user_data parameter to Clipboard function handlers.
 
 #include <imgui/imgui.h>
-#include "imgui_impl_sdl.h"
+#include "imgui-impl-sdl.h"
 
 // SDL
 // (the multi-viewports feature requires SDL features supported from SDL 2.0.4+. SDL 2.0.5+ is highly recommended)

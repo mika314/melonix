@@ -4,9 +4,9 @@
 // Read online: https://github.com/ocornut/imgui/tree/master/docs
 
 #include "app.hpp"
-#include "file_open.hpp"
-#include "imgui_impl_opengl3.h"
-#include "imgui_impl_sdl.h"
+#include "file-open.hpp"
+#include "imgui-impl-opengl3.h"
+#include "imgui-impl-sdl.h"
 #include <functional>
 #include <imgui/imgui.h>
 #include <log/log.hpp>
