@@ -90,20 +90,20 @@ auto SpecCache::populateTex(GLuint texture, bool &isDirty, int key) -> GLuint
       }
       else
       {
-        const auto k = static_cast<unsigned char>((tmp - 2 * 255 / 3) * 3);
-        data[i] = std::array<unsigned char, 3>{k, static_cast<unsigned char>(tmp), k};
+        const auto l_k = static_cast<unsigned char>((tmp - 2 * 255 / 3) * 3);
+        data[i] = std::array<unsigned char, 3>{l_k, static_cast<unsigned char>(tmp), l_k};
       }
     }
   }
 
-  glTexImage1D(GL_TEXTURE_1D,    // target
-               0,                // level
-               3,                // internalFormat
-               data.size(),      // width
-               0,                // border
-               GL_RGB,           // format
-               GL_UNSIGNED_BYTE, // type
-               data.data()       // data
+  glTexImage1D(GL_TEXTURE_1D,                     // target
+               0,                                 // level
+               3,                                 // internalFormat
+               static_cast<GLsizei>(data.size()), // width
+               0,                                 // border
+               GL_RGB,                            // format
+               GL_UNSIGNED_BYTE,                  // type
+               data.data()                        // data
   );
 
   return texture;

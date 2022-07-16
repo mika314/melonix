@@ -1,0 +1,1 @@
+cflags="-Weverything -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-unreachable-code-loop-increment -Wno-exit-time-destructors -Wno-padded -Wno-sign-conversion -Wno-shadow-field-in-constructor -Wno-reserved-identifier -Wno-zero-as-null-pointer-constant -Wno-old-style-cast -Wno-implicit-int-float-conversion -Wno-double-promotion -Wno-weak-vtables -Wall -Wextra -gdwarf-3"

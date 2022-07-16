@@ -50,7 +50,7 @@ struct ImGui_ImplSDLRenderer_Data
 // It is STRONGLY preferred that you use docking branch with multi-viewports (== single Dear ImGui context + multiple windows) instead of multiple Dear ImGui contexts.
 static ImGui_ImplSDLRenderer_Data* ImGui_ImplSDLRenderer_GetBackendData()
 {
-    return ImGui::GetCurrentContext() ? (ImGui_ImplSDLRenderer_Data*)ImGui::GetIO().BackendRendererUserData : NULL;
+    return ImGui::GetCurrentContext() ? (ImGui_ImplSDLRenderer_Data*)ImGui::GetIO().BackendRendererUserData : nullptr;
 }
 
 // Functions
@@ -62,7 +62,7 @@ bool ImGui_ImplSDLRenderer_Init(SDL_Renderer* renderer)
 
     // Setup backend capabilities flags
     ImGui_ImplSDLRenderer_Data* bd = IM_NEW(ImGui_ImplSDLRenderer_Data)();
-    io.BackendRendererUserData = (void*)bd;
+    io.BackendRendererUserData = static_cast<void*>(bd);
     io.BackendRendererName = "imgui_impl_sdlrenderer";
     io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;  // We can honor the ImDrawCmd::VtxOffset field, allowing for large meshes.
 
@@ -79,8 +79,8 @@ void ImGui_ImplSDLRenderer_Shutdown()
 
     ImGui_ImplSDLRenderer_DestroyDeviceObjects();
 
-    io.BackendRendererName = NULL;
-    io.BackendRendererUserData = NULL;
+    io.BackendRendererName = nullptr;
+    io.BackendRendererUserData = nullptr;
     IM_DELETE(bd);
 }
 
@@ -90,8 +90,8 @@ static void ImGui_ImplSDLRenderer_SetupRenderState()
 
 	// Clear out any viewports and cliprect set by the user
     // FIXME: Technically speaking there are lots of other things we could backup/setup/restore during our render process.
-	SDL_RenderSetViewport(bd->SDLRenderer, NULL);
-	SDL_RenderSetClipRect(bd->SDLRenderer, NULL);
+	SDL_RenderSetViewport(bd->SDLRenderer, nullptr);
+	SDL_RenderSetClipRect(bd->SDLRenderer, nullptr);
 }
 
 void ImGui_ImplSDLRenderer_NewFrame()
@@ -118,8 +118,8 @@ void ImGui_ImplSDLRenderer_RenderDrawData(ImDrawData* draw_data)
 	render_scale.y = (rsy == 1.0f) ? draw_data->FramebufferScale.y : 1.0f;
 
 	// Avoid rendering when minimized, scale coordinates for retina displays (screen coordinates != framebuffer coordinates)
-	int fb_width = (int)(draw_data->DisplaySize.x * render_scale.x);
-	int fb_height = (int)(draw_data->DisplaySize.y * render_scale.y);
+	int fb_width = static_cast<int>(draw_data->DisplaySize.x * render_scale.x);
+	int fb_height = static_cast<int>(draw_data->DisplaySize.y * render_scale.y);
 	if (fb_width == 0 || fb_height == 0)
 		return;
 
@@ -166,28 +166,28 @@ void ImGui_ImplSDLRenderer_RenderDrawData(ImDrawData* draw_data)
                 ImVec2 clip_max((pcmd->ClipRect.z - clip_off.x) * clip_scale.x, (pcmd->ClipRect.w - clip_off.y) * clip_scale.y);
                 if (clip_min.x < 0.0f) { clip_min.x = 0.0f; }
                 if (clip_min.y < 0.0f) { clip_min.y = 0.0f; }
-                if (clip_max.x > fb_width) { clip_max.x = (float)fb_width; }
-                if (clip_max.y > fb_height) { clip_max.y = (float)fb_height; }
+                if (clip_max.x > fb_width) { clip_max.x = static_cast<float>(fb_width); }
+                if (clip_max.y > fb_height) { clip_max.y = static_cast<float>(fb_height); }
                 if (clip_max.x <= clip_min.x || clip_max.y <= clip_min.y)
                     continue;
 
-                SDL_Rect r = { (int)(clip_min.x), (int)(clip_min.y), (int)(clip_max.x - clip_min.x), (int)(clip_max.y - clip_min.y) };
+                SDL_Rect r = { static_cast<int>(clip_min.x), static_cast<int>(clip_min.y), static_cast<int>(clip_max.x - clip_min.x), static_cast<int>(clip_max.y - clip_min.y) };
                 SDL_RenderSetClipRect(bd->SDLRenderer, &r);
 
-                const float* xy = (const float*)((const char*)(vtx_buffer + pcmd->VtxOffset) + IM_OFFSETOF(ImDrawVert, pos));
-                const float* uv = (const float*)((const char*)(vtx_buffer + pcmd->VtxOffset) + IM_OFFSETOF(ImDrawVert, uv));
+                const float* xy = reinterpret_cast<const float*>(reinterpret_cast<const char*>(vtx_buffer + pcmd->VtxOffset) + IM_OFFSETOF(ImDrawVert, pos));
+                const float* uv = reinterpret_cast<const float*>(reinterpret_cast<const char*>(vtx_buffer + pcmd->VtxOffset) + IM_OFFSETOF(ImDrawVert, uv));
 #if SDL_VERSION_ATLEAST(2,0,19)
-                const SDL_Color* color = (const SDL_Color*)((const char*)(vtx_buffer + pcmd->VtxOffset) + IM_OFFSETOF(ImDrawVert, col)); // SDL 2.0.19+
+                const SDL_Color* color = reinterpret_cast<const SDL_Color*>((const char*)(vtx_buffer + pcmd->VtxOffset) + IM_OFFSETOF(ImDrawVert, col)); // SDL 2.0.19+
 #else
                 const int* color = (const int*)((const char*)(vtx_buffer + pcmd->VtxOffset) + IM_OFFSETOF(ImDrawVert, col)); // SDL 2.0.17 and 2.0.18
 #endif
 
                 // Bind texture, Draw
-				SDL_Texture* tex = (SDL_Texture*)pcmd->GetTexID();
+				SDL_Texture* tex = static_cast<SDL_Texture*>(pcmd->GetTexID());
                 SDL_RenderGeometryRaw(bd->SDLRenderer, tex,
-                    xy, (int)sizeof(ImDrawVert),
-                    color, (int)sizeof(ImDrawVert),
-                    uv, (int)sizeof(ImDrawVert),
+                    xy, static_cast<int>(sizeof(ImDrawVert)),
+                    color, static_cast<int>(sizeof(ImDrawVert)),
+                    uv, static_cast<int>(sizeof(ImDrawVert)),
                     cmd_list->VtxBuffer.Size - pcmd->VtxOffset,
                     idx_buffer + pcmd->IdxOffset, pcmd->ElemCount, sizeof(ImDrawIdx));
             }
@@ -196,7 +196,7 @@ void ImGui_ImplSDLRenderer_RenderDrawData(ImDrawData* draw_data)
 
     // Restore modified SDL_Renderer state
     SDL_RenderSetViewport(bd->SDLRenderer, &old.Viewport);
-    SDL_RenderSetClipRect(bd->SDLRenderer, old.ClipEnabled ? &old.ClipRect : NULL);
+    SDL_RenderSetClipRect(bd->SDLRenderer, old.ClipEnabled ? &old.ClipRect : nullptr);
 }
 
 // Called by Init/NewFrame/Shutdown
@@ -213,12 +213,12 @@ bool ImGui_ImplSDLRenderer_CreateFontsTexture()
     // Upload texture to graphics system
     // (Bilinear sampling is required by default. Set 'io.Fonts->Flags |= ImFontAtlasFlags_NoBakedLines' or 'style.AntiAliasedLinesUseTex = false' to allow point/nearest sampling)
     bd->FontTexture = SDL_CreateTexture(bd->SDLRenderer, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STATIC, width, height);
-    if (bd->FontTexture == NULL)
+    if (bd->FontTexture == nullptr)
     {
         SDL_Log("error creating texture");
         return false;
     }
-    SDL_UpdateTexture(bd->FontTexture, NULL, pixels, 4 * width);
+    SDL_UpdateTexture(bd->FontTexture, nullptr, pixels, 4 * width);
     SDL_SetTextureBlendMode(bd->FontTexture, SDL_BLENDMODE_BLEND);
     SDL_SetTextureScaleMode(bd->FontTexture, SDL_ScaleModeLinear);
 

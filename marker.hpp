@@ -14,6 +14,6 @@ struct Marker
   SER_PROP(dTime);    \
   SER_PROP(pitchBend);
 
-  SER_DEF_PROPS();
+  SER_DEF_PROPS()
 #undef SER_PROP_LIST
 };

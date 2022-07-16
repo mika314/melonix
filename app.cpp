@@ -72,8 +72,8 @@ auto App::draw() -> void
       togglePlay();
     // brightnes
     ImGui::SliderFloat("Brightness", &brightness, 0.0f, 100.0f);
-    float newK = pow(2, brightness / 10 + 9);
-    if (k != newK)
+    float newK = powf(2, brightness / 10 + 9);
+    if (std::fabs(k - newK) > 0.001f)
     {
       k = newK;
       specCache = nullptr;
@@ -115,9 +115,10 @@ auto App::draw() -> void
     if (followMode)
     {
       const auto desieredStart = displayCursor - rangeTime / 5;
-      const auto newStart =
-        (std::abs(desieredStart - startTime) > 4 * 1024. / sampleRate) ? (startTime + (desieredStart - startTime) * 0.2) : desieredStart;
-      if (newStart != startTime)
+      const auto newStart = (std::abs(desieredStart - startTime) > 4 * 1024. / sampleRate)
+                              ? (startTime + (desieredStart - startTime) * 0.2)
+                              : desieredStart;
+      if (std::abs(newStart - startTime) < 0.001)
       {
         startTime = newStart;
         waveformCache.clear();
@@ -156,18 +157,35 @@ auto App::preproc() -> void
     // generate grains
     grains.clear();
     auto start = 0;
-    auto grainSize = estimateGrainSize(start);
     auto nextEstimation = GrainSpectrSize;
-    while (start < static_cast<int>(wavData.size() - grainSize - 1))
+    while (start < static_cast<int>(wavData.size() - preferredGrainSize - 1))
     {
       bool found = false;
-      for (auto i = 0; i < grainSize; ++i)
+      for (auto i = 0; i < preferredGrainSize; ++i)
       {
-        const auto idx = start + grainSize + (i % 2 == 0 ? i / 2 : -i / 2);
-        const auto isZeroCrossing = wavData[idx] < 0 && wavData[idx + 1] >= 0;
+        const auto idx = start + preferredGrainSize + (i % 2 == 0 ? i / 2 : -i / 2);
+        const auto isZeroCrossing = [&]() {
+          const auto lookAround = 7;
+          if (idx < lookAround)
+            return false;
+          if (idx >= static_cast<int>(wavData.size() - lookAround - 1))
+            return false;
+          for (int j = 0; j < lookAround; ++j)
+          {
+            if (wavData[idx - j] >= 0)
+              return false;
+            if (wavData[idx + 1 + j] < 0)
+              return false;
+          }
+          return true;
+        }();
         if (isZeroCrossing)
         {
-          grains.insert(std::make_pair(start, std::make_tuple(std::span<float>(wavData.data() + start, idx - start), idx - start - grainSize)));
+          grains.insert(
+            std::make_pair(start,
+                           std::make_tuple(std::span<float>(wavData.data() + start, idx - start),
+                                           idx - start - preferredGrainSize)));
+          LOG("good grain", start, idx - start);
           start = idx;
           found = true;
           break;
@@ -175,15 +193,34 @@ auto App::preproc() -> void
       }
       if (!found)
       {
-        LOG("bad grain", start, grainSize);
+        LOG("bad grain", start, preferredGrainSize);
         found = false;
-        for (auto i = start + grainSize + grainSize / 2; i < static_cast<int>(wavData.size() - 1); ++i)
+        for (auto i = start + preferredGrainSize + preferredGrainSize / 2;
+             i < static_cast<int>(wavData.size() - 1);
+             ++i)
         {
-          const auto isZeroCrossing = wavData[i] < 0 && wavData[i + 1] >= 0;
+          const auto isZeroCrossing = [&]() {
+            const auto lookAround = 3;
+            if (i < lookAround)
+              return false;
+            if (i >= static_cast<int>(wavData.size() - lookAround - 1))
+              return false;
+            for (int j = 0; j < lookAround; ++j)
+            {
+              if (wavData[i - j] >= 0)
+                return false;
+              if (wavData[i + 1 + j] < 0)
+                return false;
+            }
+            return true;
+          }();
           if (isZeroCrossing)
           {
-            grains.insert(std::make_pair(start, std::make_tuple(std::span<float>(wavData.data() + start, i - start), i - start - grainSize)));
-            LOG("grain", start, i - start);
+            grains.insert(
+              std::make_pair(start,
+                             std::make_tuple(std::span<float>(wavData.data() + start, i - start),
+                                             i - start - preferredGrainSize)));
+            LOG("bad grain", start, i - start);
             start = i;
             found = true;
             break;
@@ -193,25 +230,23 @@ auto App::preproc() -> void
           break;
       }
       if (start > nextEstimation)
-      {
         nextEstimation += GrainSpectrSize;
-        grainSize = estimateGrainSize(start);
-      }
     }
   }
 
   calcPicks();
   auto want = [&]() {
-    SDL_AudioSpec want;
-    want.freq = sampleRate;
-    want.format = AUDIO_F32LSB;
-    want.channels = 1;
-    want.samples = 1024;
-    return want;
+    SDL_AudioSpec ret;
+    ret.freq = sampleRate;
+    ret.format = AUDIO_F32LSB;
+    ret.channels = 1;
+    ret.samples = 1024;
+    return ret;
   }();
   SDL_AudioSpec have;
-  audio = std::make_unique<sdl::Audio>(
-    nullptr, false, &want, &have, 0, [&](Uint8 *stream, int len) { playback(reinterpret_cast<float *>(stream), len / sizeof(float)); });
+  audio = std::make_unique<sdl::Audio>(nullptr, false, &want, &have, 0, [&](Uint8 *stream, int len) {
+    playback(reinterpret_cast<float *>(stream), len / sizeof(float));
+  });
 
   spec = std::make_unique<Spec>(std::span<float>{wavData.data(), wavData.data() + wavData.size()});
 }
@@ -228,7 +263,7 @@ auto App::playback(float *w, size_t dur) -> void
       *w = 0;
     for (int i = 0; i < 100; ++i)
     {
-      *w *= .01 * i;
+      *w *= .01f * i;
       --w;
     }
     restWav.clear();
@@ -258,12 +293,14 @@ auto App::playback(float *w, size_t dur) -> void
 
 auto App::process(double cursor, std::vector<float> &wav) -> double
 {
-  const auto sample = time2Sample(cursor);
   const auto pitchBend = time2PitchBend(cursor);
-  const auto rate = pow(2, pitchBend / 12);
-  auto it = grains.lower_bound(sample);
+  const auto rate = powf(2, pitchBend / 12);
+  auto it1 = [&]() {
+    const auto sample = time2Sample(cursor);
+    return grains.lower_bound(sample);
+  }();
 
-  if (it == std::end(grains))
+  if (it1 == std::end(grains))
   {
     isAudioPlaying = false;
     for (auto i = 0; i < preferredGrainSize; ++i)
@@ -271,7 +308,7 @@ auto App::process(double cursor, std::vector<float> &wav) -> double
     return 0;
   }
 
-  const auto grain = std::get<0>(it->second);
+  const auto grain = std::get<0>(it1->second);
   const auto nextGrainFirstSample = [&]() {
     auto sz = 0;
     for (auto i = 0;; ++i)
@@ -284,57 +321,25 @@ auto App::process(double cursor, std::vector<float> &wav) -> double
       ++sz;
     }
     const auto sample = time2Sample(cursor + 1. * sz / sampleRate);
-    auto it = grains.lower_bound(sample);
-    if (it == std::end(grains))
+    auto it2 = grains.lower_bound(sample);
+    if (it2 == std::end(grains))
       return 0.f;
 
-    return std::get<0>(it->second).front();
+    return std::get<0>(it2->second).front();
   }();
-  const auto diff = &grain[0] - &prevGrain[prevGrain.size()];
   prevGrain = grain;
 
   auto sz = 0;
-  if (diff == 0)
+  for (auto i = 0;; ++i)
   {
-    for (auto i = 0;; ++i)
-    {
-      auto idxF = double{};
-      const auto curBias = std::modf(i * rate + bias, &idxF);
-      const auto idx = static_cast<size_t>(idxF);
-      if (idx >= grain.size())
-        break;
-      wav.push_back((1. - curBias) * grain[idx] + curBias * (idx + 1 < grain.size() ? grain[idx + 1] : nextGrainFirstSample));
-      ++sz;
-    }
-  }
-  else
-  {
-    const auto overlap = (rand() % 200 + 700) / 1000.;
-    const auto grainPart = static_cast<size_t>(grain.size() / rate * overlap);
-    auto wavIdx = wav.size() > grainPart ? wav.size() - grainPart : 0U;
-    for (auto i = 0;; ++i)
-    {
-      auto idxF = double{};
-      const auto curBias = std::modf(i * rate + bias, &idxF);
-      const auto idx = static_cast<size_t>(idxF);
-      if (idx >= grain.size())
-        break;
-      const auto v = (1. - curBias) * grain[idx] + curBias * (idx + 1 < grain.size() ? grain[idx + 1] : nextGrainFirstSample);
-      if (wavIdx >= wav.size())
-      {
-        wav.resize(wavIdx + 1);
-        ++sz;
-      }
-
-      if (idx > grain.size() * overlap)
-        wav[wavIdx] = v;
-      else
-      {
-        const auto k = 1.f * idx / (grain.size() * overlap);
-        wav[wavIdx] = sin((1.f - k) * 3.1415926 / 2) * wav[wavIdx] + sin(k * 3.1415926 / 2) * v;
-      }
-      ++wavIdx;
-    }
+    auto idxF = float{};
+    const auto curBias = std::modf(i * rate + bias, &idxF);
+    const auto idx = static_cast<size_t>(idxF);
+    if (idx >= grain.size())
+      break;
+    wav.push_back((1.f - curBias) * grain[idx] +
+                  curBias * (idx + 1 < grain.size() ? grain[idx + 1] : nextGrainFirstSample));
+    ++sz;
   }
   return 1. * sz / sampleRate;
 }
@@ -433,16 +438,17 @@ auto App::glDraw() -> void
   glEnable(GL_BLEND);
   glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-  glViewport(0, 0, (int)io.DisplaySize.x, static_cast<int>(.1 * Height));
+  glViewport(0, 0, (int)io.DisplaySize.x, static_cast<int>(.1f * Height));
   glMatrixMode(GL_PROJECTION);
   glLoadIdentity();
-  glOrtho(0, Width, 1.f, -1.f, -1, 1);
+  glOrtho(0, Width, 1., -1., -1, 1);
   // Our state
   ImVec4 clearColor = ImVec4(0.f, 0.f, 0.f, 1.f);
-  glClearColor(clearColor.x * clearColor.w, clearColor.y * clearColor.w, clearColor.z * clearColor.w, clearColor.w);
+  glClearColor(
+    clearColor.x * clearColor.w, clearColor.y * clearColor.w, clearColor.z * clearColor.w, clearColor.w);
   glClear(GL_COLOR_BUFFER_BIT);
 
-  if (waveformCache.size() != Width)
+  if (waveformCache.size() != static_cast<size_t>(Width))
     waveformCache.clear();
 
   if (waveformCache.empty())
@@ -470,14 +476,15 @@ auto App::glDraw() -> void
   glEnd();
 
   // draw spectogram
-  glViewport(0, static_cast<int>(.1 * Height), (int)io.DisplaySize.x, static_cast<int>(Height * 0.9 - 20));
+  glViewport(
+    0, static_cast<int>(.1 * Height), (int)io.DisplaySize.x, static_cast<int>(Height * 0.9 - 20));
   glMatrixMode(GL_PROJECTION);
   glLoadIdentity();
-  glOrtho(0, Width, 0.f, 1.f, -1, 1);
+  glOrtho(0, Width, 0., 1., -1, 1);
   glEnable(GL_TEXTURE_1D);
   glColor3f(1.f, 1.f, 1.f);
 
-  auto step = pow(2., 1. / 12.);
+  auto step = powf(2.f, 1.f / 12.f);
 
   for (auto x = 0; x < Width; ++x)
   {
@@ -490,17 +497,17 @@ auto App::glDraw() -> void
     const auto pitchBend = time2PitchBend(startTime + x * rangeTime / Width);
     audio->unlock();
     const auto startFreq = 55. * pow(2., (startNote - 24) / 12.);
-    auto freq = startFreq / sampleRate * 2.;
+    auto freq = static_cast<float>(startFreq / sampleRate * 2.);
     for (auto i = 0; i < rangeNote; ++i)
     {
       glTexCoord1f(freq);
       glVertex2f(x, (i + pitchBend) / rangeNote);
 
       glTexCoord1f(freq * step);
-      glVertex2f(x, 1.f * (i + pitchBend + 1.) / rangeNote);
+      glVertex2f(x, 1.f * (i + pitchBend + 1.f) / rangeNote);
 
       glTexCoord1f(freq * step);
-      glVertex2f(x + 1.f, (i + pitchBend + 1.) / rangeNote);
+      glVertex2f(x + 1.f, (i + pitchBend + 1.f) / rangeNote);
 
       glTexCoord1f(freq);
       glVertex2f(x + 1.f, (i + pitchBend) / rangeNote);
@@ -515,25 +522,26 @@ auto App::glDraw() -> void
   glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
   glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
   std::vector<std::array<unsigned char, 3>> pianoData;
-  pianoData.resize(.9 * Height - 20);
+  pianoData.resize(static_cast<int>(.9f * Height - 20));
   auto lastNote = 0;
   for (auto i = 0U; i < pianoData.size(); ++i)
   {
     const auto tmp = i * rangeNote + pianoData.size() / 2;
     const auto note = static_cast<int>(tmp / pianoData.size() + startNote);
-    auto isBlack = std::array{false, true, false, false, true, false, true, false, false, true, false, true}[note % 12];
+    auto isBlack = std::array{
+      false, true, false, false, true, false, true, false, false, true, false, true}[note % 12];
     unsigned char c = (note == lastNote) ? (isBlack ? 128 : 255) : 0;
     pianoData[i] = std::array{c, c, c};
     lastNote = note;
   }
-  glTexImage1D(GL_TEXTURE_1D,    // target
-               0,                // level
-               3,                // internalFormat
-               pianoData.size(), // width
-               0,                // border
-               GL_RGB,           // format
-               GL_UNSIGNED_BYTE, // type
-               pianoData.data()  // data
+  glTexImage1D(GL_TEXTURE_1D,                          // target
+               0,                                      // level
+               3,                                      // internalFormat
+               static_cast<GLsizei>(pianoData.size()), // width
+               0,                                      // border
+               GL_RGB,                                 // format
+               GL_UNSIGNED_BYTE,                       // type
+               pianoData.data()                        // data
   );
 
   glBegin(GL_QUADS);
@@ -552,13 +560,14 @@ auto App::glDraw() -> void
   // draw bars
   const auto beatDuration = 60. / tempo;
   glBegin(GL_LINES);
-  for (auto x = static_cast<int>(startTime / beatDuration); x * beatDuration < startTime + rangeTime; ++x)
+  for (auto x = static_cast<int>(startTime / beatDuration); x * beatDuration < startTime + rangeTime;
+       ++x)
   {
     if (x % 4 == 0)
       glColor4f(1.f, 1.f, 1.f, .096f);
     else
       glColor4f(1.f, 1.f, 1.f, .04f);
-    const auto pxX = (x * beatDuration - startTime) * Width / rangeTime;
+    const auto pxX = static_cast<float>((x * beatDuration - startTime) * Width / rangeTime);
     glVertex2f(pxX, 0);
     glVertex2f(pxX, 1);
   }
@@ -574,8 +583,8 @@ auto App::glDraw() -> void
 
   glColor4f(1.f, 0.f, 0.5f, 0.25f);
   glBegin(GL_LINES);
-  glVertex2f((1. * displayCursor - startTime) / rangeTime * Width, 0.f);
-  glVertex2f((1. * displayCursor - startTime) / rangeTime * Width, 1.0f);
+  glVertex2f(static_cast<float>((1.f * displayCursor - startTime) / rangeTime * Width), 0.f);
+  glVertex2f(static_cast<float>((1.f * displayCursor - startTime) / rangeTime * Width), 1.0f);
   glEnd();
 }
 
@@ -586,10 +595,11 @@ auto App::drawMarkers() -> void
   glBegin(GL_LINES);
   for (const auto &marker : markers)
   {
-    const auto x0 = (sample2Time(marker.sample) - startTime - marker.dTime) * Width / rangeTime;
-    const auto y0 = (marker.note - startNote) / rangeNote;
-    const auto x = (sample2Time(marker.sample) - startTime) * Width / rangeTime;
-    const auto y = (marker.note - startNote + marker.pitchBend) / rangeNote;
+    const auto x0 =
+      static_cast<float>((sample2Time(marker.sample) - startTime - marker.dTime) * Width / rangeTime);
+    const auto y0 = static_cast<float>((marker.note - startNote) / rangeNote);
+    const auto x = static_cast<float>((sample2Time(marker.sample) - startTime) * Width / rangeTime);
+    const auto y = static_cast<float>((marker.note - startNote + marker.pitchBend) / rangeNote);
     glColor3f(0.5f, 0.5f, 0.5f);
     glVertex2f(x0, y0);
     glVertex2f(x, y);
@@ -705,7 +715,12 @@ auto App::loadAudioFile(const std::string &path) -> void
     // resample frames
     float *buffer;
     av_samples_alloc((uint8_t **)&buffer, NULL, 1, frame->nb_samples, AV_SAMPLE_FMT_FLT, 0);
-    int frame_count = swr_convert(swr, (uint8_t **)&buffer, frame->nb_samples, (const uint8_t **)frame->data, frame->nb_samples);
+    int frame_count =
+      swr_convert(swr,
+                  reinterpret_cast<uint8_t **>(&buffer),
+                  frame->nb_samples,
+                  const_cast<const uint8_t **>(reinterpret_cast<uint8_t **>(frame->data)),
+                  frame->nb_samples);
     // append resampled frames to data
     const auto sz = wavData.size();
     wavData.resize(sz + frame->nb_samples);
@@ -739,7 +754,8 @@ auto App::mouseMotion(int x, int y, int dx, int dy, uint32_t state) -> void
   {
     auto modState = SDL_GetModState();
     const auto leftLimit = std::max(-rangeTime * 0.5, -.5 * wavData.size() / sampleRate);
-    const auto rightLimit = std::min(wavData.size() / sampleRate + rangeTime * 0.5, 1.5 * wavData.size() / sampleRate);
+    const auto rightLimit =
+      std::min(wavData.size() / sampleRate + rangeTime * 0.5, 1.5 * wavData.size() / sampleRate);
     if ((modState & (KMOD_LCTRL | KMOD_RCTRL)) != 0)
     {
       // zoom in or zoom out
@@ -778,11 +794,11 @@ auto App::mouseMotion(int x, int y, int dx, int dy, uint32_t state) -> void
         const auto newEndNote = (startNote + rangeNote - cursorPos) * zoom + cursorPos;
         startNote = (newStartNote >= 0. && newStartNote <= 127.) ? newStartNote : startNote;
         if (newEndNote >= 0. && newEndNote <= 127.)
-          rangeNote = newEndNote - startNote;
+          rangeNote = static_cast<float>(newEndNote - startNote);
         else if (newEndNote < 0.)
-          rangeNote = 10.;
+          rangeNote = 10.f;
         else if (newEndNote > 127.)
-          rangeNote = 127. - startNote;
+          rangeNote = static_cast<float>(127.f - startNote);
       }
     }
     else
@@ -842,28 +858,29 @@ auto App::getTex(double start) -> GLuint
   if (!spec)
   {
     static Texture nullTexture = []() {
-      Texture nullTexture;
+      Texture ret;
       static std::vector<std::array<unsigned char, 3>> data;
       data.resize(16);
 
-      glBindTexture(GL_TEXTURE_1D, nullTexture.get());
+      glBindTexture(GL_TEXTURE_1D, ret.get());
       glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
       glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-      glTexImage1D(GL_TEXTURE_1D,    // target
-                   0,                // level
-                   3,                // internalFormat
-                   data.size(),      // width
-                   0,                // border
-                   GL_RGB,           // format
-                   GL_UNSIGNED_BYTE, // type
-                   data.data()       // data
+      glTexImage1D(GL_TEXTURE_1D,                     // target
+                   0,                                 // level
+                   3,                                 // internalFormat
+                   static_cast<GLsizei>(data.size()), // width
+                   0,                                 // border
+                   GL_RGB,                            // format
+                   GL_UNSIGNED_BYTE,                  // type
+                   data.data()                        // data
       );
-      return nullTexture;
+      return ret;
     }();
     return nullTexture.get();
   }
   if (!specCache)
-    specCache = std::make_unique<SpecCache>(*spec, k, Width, rangeTime, [this](double val) { return time2Sample(val); });
+    specCache = std::make_unique<SpecCache>(
+      *spec, k, Width, rangeTime, [this](double val) { return time2Sample(val); });
   return specCache->getTex(start);
 }
 
@@ -875,7 +892,8 @@ auto App::mouseButton(int x, int y, uint32_t state, uint8_t button) -> void
   const auto Height = io.DisplaySize.y * .9 - 20;
 
   audio->lock();
-  std::sort(markers.begin(), markers.end(), [](const auto &a, const auto &b) { return a.sample < b.sample; });
+  std::sort(
+    markers.begin(), markers.end(), [](const auto &a, const auto &b) { return a.sample < b.sample; });
   audio->unlock();
   if (button == SDL_BUTTON_LEFT)
   {
@@ -904,19 +922,25 @@ auto App::mouseButton(int x, int y, uint32_t state, uint8_t button) -> void
       const auto dTime = 8 * rangeTime / Width;
       const auto dNote = 8 * rangeNote / Height;
 
-      auto it = std::find_if(std::begin(markers), std::end(markers), [dNote, dTime, note, this, time](const auto &m) {
-        return std::abs(sample2Time(m.sample) - time) < dTime && std::abs(m.note - note + m.pitchBend) < dNote;
-      });
+      auto it = std::find_if(
+        std::begin(markers), std::end(markers), [dNote, dTime, note, this, time](const auto &m) {
+          return std::abs(sample2Time(m.sample) - time) < dTime &&
+                 std::abs(m.note - note + m.pitchBend) < dNote;
+        });
       if (it == std::end(markers))
       {
         // add marker
         audio->lock();
         const auto pitchBend = time2PitchBend(time);
         markers.push_back(Marker{sample, note - pitchBend, 0., pitchBend});
-        std::sort(markers.begin(), markers.end(), [](const auto &a, const auto &b) { return a.sample < b.sample; });
+        std::sort(markers.begin(), markers.end(), [](const auto &a, const auto &b) {
+          return a.sample < b.sample;
+        });
         audio->unlock();
         invalidateCache();
-        selectedMarker = std::find_if(std::begin(markers), std::end(markers), [sample](const auto &m) { return m.sample == sample; });
+        selectedMarker = std::find_if(std::begin(markers), std::end(markers), [sample](const auto &m) {
+          return m.sample == sample;
+        });
       }
       else
       {
@@ -937,9 +961,11 @@ auto App::mouseButton(int x, int y, uint32_t state, uint8_t button) -> void
     const auto note = (Height - y) * rangeNote / Height + startNote;
     const auto dTime = 8 * rangeTime / Width;
     const auto dNote = 8 * rangeNote / Height;
-    auto it = std::find_if(std::begin(markers), std::end(markers), [dNote, dTime, note, this, time](const auto &m) {
-      return std::abs(sample2Time(m.sample) - time) < dTime && std::abs(m.note - note + m.pitchBend) < dNote;
-    });
+    auto it = std::find_if(
+      std::begin(markers), std::end(markers), [dNote, dTime, note, this, time](const auto &m) {
+        return std::abs(sample2Time(m.sample) - time) < dTime &&
+               std::abs(m.note - note + m.pitchBend) < dNote;
+      });
     if (it != std::end(markers))
     {
       audio->lock();
@@ -1007,7 +1033,8 @@ auto App::sample2Time(int val) const -> double
     const auto rightTime = prevTime + 1.0 * (marker.sample - prevSample) / sampleRate + marker.dTime;
     if (val > prevSample && val <= marker.sample)
     {
-      const auto ret = prevTime + (val - prevSample) * (rightTime - prevTime) / (marker.sample - prevSample);
+      const auto ret =
+        prevTime + (val - prevSample) * (rightTime - prevTime) / (marker.sample - prevSample);
       sample2TimeCache[val] = ret;
       return ret;
     }
@@ -1038,7 +1065,8 @@ auto App::time2Sample(double val) const -> int
     const auto rightTime = prevTime + 1.0 * (marker.sample - prevSample) / sampleRate + marker.dTime;
     if (val > prevTime && val <= rightTime)
     {
-      const auto ret = prevSample + (val - prevTime) * (marker.sample - prevSample) / (rightTime - prevTime);
+      const auto ret = static_cast<int>(prevSample + (val - prevTime) * (marker.sample - prevSample) /
+                                                       (rightTime - prevTime));
       time2SampleCache[static_cast<int>(val * sampleRate)] = ret;
       return ret;
     }
@@ -1046,17 +1074,17 @@ auto App::time2Sample(double val) const -> int
     prevTime = rightTime;
   }
 
-  const auto ret = prevSample + (val - prevTime) * sampleRate;
+  const auto ret = static_cast<int>(prevSample + (val - prevTime) * sampleRate);
   time2SampleCache[static_cast<int>(val * sampleRate)] = ret;
   return ret;
 }
 
 auto App::duration() const -> double
 {
-  return sample2Time(wavData.size() - 1);
+  return sample2Time(static_cast<int>(wavData.size() - 1));
 }
 
-auto App::time2PitchBend(double val) const -> double
+auto App::time2PitchBend(double val) const -> float
 {
   if (val <= 0)
     return 0;
@@ -1072,7 +1100,8 @@ auto App::time2PitchBend(double val) const -> double
     const auto rightTime = prevTime + 1.0 * (marker.sample - prevSample) / sampleRate + marker.dTime;
     if (val > prevTime && val <= rightTime)
     {
-      const auto ret = prevPitchBend + (val - prevTime) * (marker.pitchBend - prevPitchBend) / (rightTime - prevTime);
+      const auto ret = static_cast<float>(
+        prevPitchBend + (val - prevTime) * (marker.pitchBend - prevPitchBend) / (rightTime - prevTime));
       time2PitchBendCache[static_cast<int>(val * sampleRate)] = ret;
       return ret;
     }
@@ -1084,71 +1113,10 @@ auto App::time2PitchBend(double val) const -> double
   if (val > duration())
     return 0;
 
-  const auto ret = prevPitchBend + (val - prevTime) * (0 - prevPitchBend) / (duration() - prevTime);
+  const auto ret =
+    static_cast<float>(prevPitchBend + (val - prevTime) * (0 - prevPitchBend) / (duration() - prevTime));
   time2PitchBendCache[static_cast<int>(val * sampleRate)] = ret;
   return ret;
-}
-
-namespace
-{
-  class GrainSpec
-  {
-  public:
-    GrainSpec() : input(fftw_alloc_complex(GrainSpectrSize)), output(fftw_alloc_complex(GrainSpectrSize))
-    {
-      memset(input, 0, sizeof(fftw_complex) * GrainSpectrSize);
-      memset(output, 0, sizeof(fftw_complex) * GrainSpectrSize);
-      plan = fftw_plan_dft_1d(GrainSpectrSize, input, output, FFTW_FORWARD, FFTW_MEASURE);
-    }
-
-    ~GrainSpec()
-    {
-      fftw_destroy_plan(plan);
-      fftw_free(input);
-      fftw_free(output);
-    }
-
-    fftw_plan plan;
-    fftw_complex *input;
-    fftw_complex *output;
-  };
-} // namespace
-
-auto App::estimateGrainSize(int start) const -> int
-{
-  static GrainSpec spec;
-  for (auto i = 0; i < GrainSpectrSize; ++i)
-  {
-    spec.input[i][0] = wavData[std::min(start + i, static_cast<int>(wavData.size() - 1))];
-    spec.input[i][1] = 0;
-  }
-  fftw_execute(spec.plan);
-  // find max value and index
-  double max = 0;
-  int maxIndex = 20 * GrainSpectrSize / sampleRate;
-  for (auto i = maxIndex; i < GrainSpectrSize / 2 / 4; ++i)
-  {
-    const auto val = std::abs(spec.output[i][0]) + std::abs(spec.output[i][1]);
-    if (val > max)
-    {
-      max = val;
-      maxIndex = i;
-    }
-  }
-  maxIndex = maxIndex * 4 - maxIndex / 4;
-  max = 0;
-  for (auto i = maxIndex; i < GrainSpectrSize / 2; ++i)
-  {
-    const auto val = std::abs(spec.output[i][0]) + std::abs(spec.output[i][1]);
-    if (val > max)
-    {
-      max = val;
-      maxIndex = i;
-    }
-  }
-
-  const auto maxFreq = std::max(1., 1. * maxIndex * sampleRate / GrainSpectrSize / 4.);
-  return std::ceil(1. * preferredGrainSize * maxFreq / sampleRate) * sampleRate / maxFreq;
 }
 
 auto App::loadMelonixFile(const std::string &fileName) -> void

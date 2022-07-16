@@ -3,8 +3,8 @@
 #include "file-save-as.hpp"
 #include "marker.hpp"
 #include "range.hpp"
-#include "spec.hpp"
 #include "spec-cache.hpp"
+#include "spec.hpp"
 #include <imgui/imgui.h>
 #include <list>
 #include <map>
@@ -43,7 +43,7 @@ private:
   double startTime = 0.;
   double rangeTime = 10.;
   double startNote = 24.;
-  double rangeNote = 60.;
+  float rangeNote = 60.f;
   mutable std::vector<std::pair<float, float>> waveformCache;
   double cursorSec = 0.0;
   bool isAudioPlaying = false;
@@ -60,10 +60,10 @@ private:
   std::vector<Marker>::iterator selectedMarker;
   mutable std::unordered_map<int, double> sample2TimeCache;
   mutable std::unordered_map<int, int> time2SampleCache;
-  mutable std::unordered_map<int, double> time2PitchBendCache;
+  mutable std::unordered_map<int, float> time2PitchBendCache;
   float tempo = 130.f;
   std::string saveName;
-  double bias = 0.;
+  float bias = 0.f;
   std::vector<float> restWav;
   std::span<float> prevGrain;
 
@@ -74,7 +74,8 @@ public:
   SER_PROP(brightness); \
   SER_PROP(markers);    \
   SER_PROP(tempo);
-  SER_DEF_PROPS();
+
+  SER_DEF_PROPS()
 #undef SER_PROP_LIST
 private:
   auto calcPicks() -> void;
@@ -94,6 +95,6 @@ private:
   auto process(double cursor, std::vector<float> &wav) -> double;
   auto sample2Time(int) const -> double;
   auto saveMelonixFile(std::string) -> void;
-  auto time2PitchBend(double) const -> double;
+  auto time2PitchBend(double) const -> float;
   auto time2Sample(double) const -> int;
 };

@@ -5,7 +5,7 @@
 
 auto FileOpen::draw() -> bool
 {
-  if (!ImGui::BeginPopupModal("FileOpen", NULL, ImGuiWindowFlags_AlwaysAutoResize))
+  if (!ImGui::BeginPopupModal("FileOpen", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
     return false;
 
   auto ret = false;

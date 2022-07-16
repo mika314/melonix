@@ -60,7 +60,8 @@ auto Spec::internalGetSpec(int start, int end) const -> std::vector<float>
   fftw_execute(plan);
   std::vector<float> ret;
   for (auto i = 0U; i < SpectrSize / 2; i++)
-    ret.push_back(sqrt(output[i][0] * output[i][0] + output[i][1] * output[i][1]) / SpectrSize);
+    ret.push_back(
+      static_cast<float>(sqrt(output[i][0] * output[i][0] + output[i][1] * output[i][1]) / SpectrSize));
   return ret;
 }
 
