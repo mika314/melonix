@@ -891,6 +891,8 @@ auto App::mouseButton(int x, int y, uint32_t state, uint8_t button) -> void
   const auto Width = io.DisplaySize.x;
   const auto Height = io.DisplaySize.y * .9 - 20;
 
+  if (!audio)
+    return;
   audio->lock();
   std::sort(
     markers.begin(), markers.end(), [](const auto &a, const auto &b) { return a.sample < b.sample; });
@@ -1172,7 +1174,9 @@ auto App::saveMelonixFile(std::string fileName) -> void
 
   LOG("saveMelonixFile", saveName);
 
-  OStrm st;
+  auto buf = std::vector<char>{};
+  buf.resize(wavData.size() * sizeof(wavData[0]) + 10'000);
+  auto st = OStrm{buf.data(), buf.data() + buf.size()};
   ::ser(st, version);
   ::ser(st, *this);
 
@@ -1182,7 +1186,7 @@ auto App::saveMelonixFile(std::string fileName) -> void
     LOG("failed to open file", fileName);
     return;
   }
-  file.write(st.str().data(), st.str().size());
+  file.write(buf.data(), st.size());
 }
 
 App::App() : fileSaveAs("Save As..."), exportWavDlg("Export WAV") {}

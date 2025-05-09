@@ -183,7 +183,7 @@ void ImGui_ImplSDLRenderer_RenderDrawData(ImDrawData* draw_data)
 #endif
 
                 // Bind texture, Draw
-				SDL_Texture* tex = static_cast<SDL_Texture*>(pcmd->GetTexID());
+				SDL_Texture* tex = reinterpret_cast<SDL_Texture*>(pcmd->GetTexID());
                 SDL_RenderGeometryRaw(bd->SDLRenderer, tex,
                     xy, static_cast<int>(sizeof(ImDrawVert)),
                     color, static_cast<int>(sizeof(ImDrawVert)),
